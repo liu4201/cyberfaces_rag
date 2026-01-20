@@ -6,3 +6,6 @@ langchain_chroma
 langchain_huggingface
 jq
 sentence_transformers
+Rank-bm25
+nltk
+numpy
