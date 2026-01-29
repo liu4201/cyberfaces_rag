@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException
-from typing import List, Dict, Any
+from typing import List, Dict, Tuple, Any
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.document_loaders import JSONLoader
 from langchain_core.documents import Document
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import os
 import json
 from rank_bm25 import BM25Okapi
@@ -13,12 +13,13 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
 import numpy as np
-# from .models import Metadata
-# from .db import get_collection
+#from langchain_community.retrievers import BM25Retriever
+#from langchain_classic.retrievers import EnsembleRetriever
+from ranx import Run, fuse
 
 #==========================Semantic Engine=================================
 
-k=3
+num_retrieval=3
 
 def rewrite_query_with_llm(question):
 
@@ -49,18 +50,18 @@ def rewrite_query_with_llm(question):
         raise Exception(f"Error: {response.status_code}, {response.text}")
     return json.loads(response.text)["choices"][0]["message"]["content"]
 
-def get_courses(question, k=k):
-    results = vectordb.similarity_search_with_relevance_scores(question,k=k)
-    #docs = vectordb.similarity_search(question,k=k)
-    #results = vectordb.similarity_search_with_score(question,k=k)
+def get_courses(question, num_retrieval=num_retrieval):
+    results = vectordb.similarity_search_with_relevance_scores(question, k=num_retrieval)
+    #docs = vectordb.similarity_search(question,k=num_retrieval)
+    #results = vectordb.similarity_search_with_score(question,k=num_retrieval)
     # for doc in docs:
     #     print(doc.metadata)
     docs = [result[0] for result in results]
     scores = [result[1] for result in results]
 
-    print(scores)
+    #print(scores)
 
-    return docs
+    return docs, scores
 
 app = FastAPI(title="Cyberfaces Smartsearch API")
 
@@ -136,14 +137,17 @@ if vectordb._collection.metadata:
 
 print(f"Data from {file_path} successfully embedded and stored in {persist_directory}")
 
+#semantic_retriever = vectordb.as_retriever(search_kwargs={"k": num_retrieval})
 
-@app.post("/search", response_model=List)
+@app.post("/search_semantic", response_model=List)
 def search_semantic_from_all_courses(question: str):
-    docs =  get_courses(question, k=k)   
+    docs, scores = get_courses(question, num_retrieval=num_retrieval) 
+    #docs = [result[0] for result in results]
+    #docs =  semantic_retriever.invoke(question)  
     return docs
 
 #==========================Lexical Engine=================================
-
+# this implement BM25 keywords search
 # Download necessary data
 nltk.download('punkt')
 nltk.download('punkt_tab')
@@ -168,24 +172,124 @@ bm25 = BM25Okapi(bm25_docs)
 
 # 3. Clean query to get non-stopping keywords and search
 
-def get_courses_from_keywords(query, k=k):
+def get_courses_from_keywords(query, num_retrieval=num_retrieval):
+
+    # the docs returned here from the chorma vectorbase with the same format as semantic search
     
     bm25_query = deep_clean_query(query)
     doc_scores = bm25.get_scores(bm25_query)
 
     # Get top N results
-    top_n_indices = np.argsort(doc_scores)[::-1][:k]
+    top_n_indices = np.argsort(doc_scores)[::-1][:num_retrieval]
     max_score = np.max(doc_scores)
     min_score = np.min(doc_scores)
 
+    #normalize the score to 0-1
     top_scores = [(doc_scores[i]-min_score)/(max_score-min_score) for i in top_n_indices]
-    top_docs = [docs[i] for i in top_n_indices]
-    #top_n = bm25.get_top_n(bm25_query, corpus, n=k)
+    top_docs = [docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
+    #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
     print(f"Top matches: {top_scores}")
 
-    return top_docs
+    return top_docs, top_scores
 
 
 @app.post("/search_lexical", response_model=List)
-def search_keywords_from_all_courses(question: str):    
-    return get_courses_from_keywords(question, k=k)
+def search_lexical_from_all_courses(question: str):
+    docs, scores = get_courses_from_keywords(question, num_retrieval=num_retrieval)    
+    return docs
+
+#==========================Lexical Engine2=================================
+# this uses langchain BM25 keywords search
+# not use due to lexical search need processing with docs and query
+
+# bm25_retriever = BM25Retriever.from_documents(docs)
+# bm25_retriever.k = k
+
+# @app.post("/search_keywords", response_model=List)
+# def search_keywords_from_all_courses(question: str):
+#     docs = bm25_retriever.invoke(question)   
+#     return docs
+
+#==========================RRF============================================
+
+# not use due to lexical search need processing with docs and query
+# ensemble_retriever = EnsembleRetriever(
+#     retrievers=[bm25_retriever, semantic_retriever], 
+#     weights=[0.5, 0.5]  # RRF ignores weights, but LangChain requires them for the object
+# )
+
+# @app.post("/search_RRF", response_model=List)
+# def search_from_all_courses(question: str):
+#     docs =  ensemble_retriever.invoke(question)   
+#     return docs
+docs_map = {str(doc.metadata["id"]): doc for doc in docs}
+
+def list_to_ranx_run(docs, scores, query_id="q1"):
+    results = {str(doc.metadata["id"]): val for doc, val in zip(docs, scores)}
+    return Run({query_id: results})
+
+def combine_rrf(question):    
+    semantic_docs, semantic_scores = get_courses(question, num_retrieval=num_retrieval)
+    keyword_docs, keyword_scores = get_courses_from_keywords(question, num_retrieval=num_retrieval)
+
+    run_semantic = list_to_ranx_run(semantic_docs, semantic_scores)
+    run_lexical = list_to_ranx_run(keyword_docs, keyword_scores)
+    
+    combined_run = fuse(
+        runs=[run_lexical, run_semantic],
+        method="rrf",
+        params={"k": 60}  # Optional: default is 60
+    )
+    
+    sorted_ids_in_tuple= sorted(combined_run["q1"].items(), key=lambda x: x[1], reverse=True)
+
+    # Access the results
+    print(sorted_ids_in_tuple)
+    output_docs = [docs_map[doc_id] for doc_id, score in sorted_ids_in_tuple if doc_id in docs_map]
+
+    return output_docs 
+
+@app.post("/search_RRF", response_model=List)
+def search_from_all_courses(question: str):
+    return combine_rrf(question)
+
+#========================== Reranking =====================================
+
+
+rerank_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2') 
+
+def combine_reranking(question):    
+    semantic_docs, _ = get_courses(question, num_retrieval=num_retrieval)
+    keyword_docs, _ = get_courses_from_keywords(question, num_retrieval=num_retrieval)
+
+    # below only take the unique docs (remove duplicates btw semantic search and keyword search)
+    seen = set()
+    combined_docs = semantic_docs 
+
+    for doc in semantic_docs:
+        seen.add(doc.metadata["id"])
+
+    for doc in keyword_docs:
+        if doc.metadata["id"] not in seen:
+            combined_docs.append(doc)
+
+    pairs = [[question, doc.page_content] for doc in combined_docs]
+
+    scores = rerank_model.predict(pairs)
+
+    ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True) 
+
+    output_docs= [result[1] for result in ranked_results]
+    
+    return output_docs 
+
+@app.post("/search_reranking_base", response_model=List)
+def rerank_from_all_courses(question: str):
+    return combine_reranking(question)  
+
+
+ 
+
+  
+
+
