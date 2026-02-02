@@ -19,6 +19,7 @@ COPY data.jsonl .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY chromaDB ./chromaDB
 
 # Expose FastAPI default port
 EXPOSE 8000
