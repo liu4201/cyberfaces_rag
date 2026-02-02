@@ -6,9 +6,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - /Users/xiaoliu/Work/Project/SmartSearch/cyberfaces-rag/chromaDB/:/app/chromaDB/
+      - ./chromaDB/:/app/chromaDB/
     environment:
       - PYTHONUNBUFFERED=1
     env_file:
       - .env
-
