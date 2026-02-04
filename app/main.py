@@ -16,10 +16,23 @@ import numpy as np
 #from langchain_community.retrievers import BM25Retriever
 #from langchain_classic.retrievers import EnsembleRetriever
 from ranx import Run, fuse
+from transformers import AutoTokenizer
+import time
+from functools import wraps
 
 #==========================Semantic Engine=================================
 
 num_retrieval=3
+
+def timer_decorator(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.perf_counter() # More precise than time.time()
+        result = func(*args, **kwargs)
+        end_time = time.perf_counter()
+        print(f"Function '{func.__name__}' executed in {end_time - start_time:.4f}s")
+        return result
+    return wrapper
 
 def rewrite_query_with_llm(question):
 
@@ -188,7 +201,7 @@ def get_courses_from_keywords(query, num_retrieval=num_retrieval):
     top_scores = [(doc_scores[i]-min_score)/(max_score-min_score) for i in top_n_indices]
     top_docs = [docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
     #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
-    print(f"Top matches: {top_scores}")
+    #print(f"Top matches: {top_scores}")
 
     return top_docs, top_scores
 
@@ -222,12 +235,13 @@ def search_lexical_from_all_courses(question: str):
 # def search_from_all_courses(question: str):
 #     docs =  ensemble_retriever.invoke(question)   
 #     return docs
-docs_map = {str(doc.metadata["id"]): doc for doc in docs}
+docs_map = {str(doc.metadata["id"]): doc for doc in docs} # to find the original doc with doc id
 
 def list_to_ranx_run(docs, scores, query_id="q1"):
     results = {str(doc.metadata["id"]): val for doc, val in zip(docs, scores)}
     return Run({query_id: results})
 
+@timer_decorator
 def combine_rrf(question):    
     semantic_docs, semantic_scores = get_courses(question, num_retrieval=num_retrieval)
     keyword_docs, keyword_scores = get_courses_from_keywords(question, num_retrieval=num_retrieval)
@@ -244,20 +258,59 @@ def combine_rrf(question):
     sorted_ids_in_tuple= sorted(combined_run["q1"].items(), key=lambda x: x[1], reverse=True)
 
     # Access the results
-    print(sorted_ids_in_tuple)
-    output_docs = [docs_map[doc_id] for doc_id, score in sorted_ids_in_tuple if doc_id in docs_map]
+    #print(sorted_ids_in_tuple)
+    #output_docs = [docs_map[doc_id] for doc_id, score in sorted_ids_in_tuple if doc_id in docs_map]
+
+    output_docs = []
+    scores = []
+    for doc_id, score in sorted_ids_in_tuple:
+        output_docs.append(docs_map[doc_id])
+        scores.append(score)
+
+    print("RRF:")
+    print(scores)
 
     return output_docs 
 
+def manual_rrf(semantic_docs, keyword_docs, k=60):
+    rrf_scores = {}
+    
+    # Process both lists
+    for rank, docs in enumerate([semantic_docs, keyword_docs]):
+        for i, doc in enumerate(docs):
+            doc_id = str(doc.metadata["id"])
+            # Rank starts at 1
+            score = 1.0 / (k + (i + 1))
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + score
+            
+    # Sort by score descending
+    sorted_results = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    output_docs = [docs_map[doc_id] for doc_id, _ in sorted_results]
+    scores = [score for _, score in sorted_results]
+
+    print("RRF:")
+    print(scores)
+
+    return output_docs
+
+@timer_decorator
+def combine_manual_rrf(question):    
+    semantic_docs, semantic_scores = get_courses(question, num_retrieval=num_retrieval)
+    keyword_docs, keyword_scores = get_courses_from_keywords(question, num_retrieval=num_retrieval)
+    return manual_rrf(semantic_docs, keyword_docs)
+
 @app.post("/search_RRF", response_model=List)
 def search_from_all_courses(question: str):
-    return combine_rrf(question)
+    return combine_manual_rrf(question)
 
 #========================== Reranking =====================================
 
-
+#Base model
 rerank_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2') 
+print(f"MiniLM Device: {rerank_model.model.device}")
 
+@timer_decorator
 def combine_reranking(question):    
     semantic_docs, _ = get_courses(question, num_retrieval=num_retrieval)
     keyword_docs, _ = get_courses_from_keywords(question, num_retrieval=num_retrieval)
@@ -280,7 +333,11 @@ def combine_reranking(question):
     ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True) 
 
     output_docs= [result[1] for result in ranked_results]
-    
+
+    output_scores = [result[0] for result in ranked_results]
+    print("Base Reranking:")
+    print(output_scores)
+
     return output_docs 
 
 @app.post("/search_reranking_base", response_model=List)
@@ -288,8 +345,58 @@ def rerank_from_all_courses(question: str):
     return combine_reranking(question)  
 
 
- 
+# Advanced model
+model_name = 'Qwen/Qwen3-Reranker-0.6B'
 
+# 1. Manually load and fix the tokenizer first
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+# 2. Pass the fixed tokenizer into the CrossEncoder
+rerank_model_advance = CrossEncoder(
+    model_name, 
+    max_length=512, 
+    tokenizer_args={'pad_token': tokenizer.pad_token}
+)
+
+# 3. Explicitly set it on the underlying model just to be safe
+rerank_model_advance.model.config.pad_token_id = tokenizer.pad_token_id
+print(f"Qwen Device: {rerank_model_advance.model.device}")
+
+@timer_decorator
+def combine_advance_reranking(question):    
+    semantic_docs, _ = get_courses(question, num_retrieval=num_retrieval)
+    keyword_docs, _ = get_courses_from_keywords(question, num_retrieval=num_retrieval)
+
+    # below only take the unique docs (remove duplicates btw semantic search and keyword search)
+    seen = set()
+    combined_docs = semantic_docs 
+
+    for doc in semantic_docs:
+        seen.add(doc.metadata["id"])
+
+    for doc in keyword_docs:
+        if doc.metadata["id"] not in seen:
+            combined_docs.append(doc)
+
+    pairs = [[question, doc.page_content] for doc in combined_docs]
+
+    scores = rerank_model_advance.predict(pairs)
+
+    ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True) 
+
+    output_docs= [result[1] for result in ranked_results]
+
+    output_scores = [result[0] for result in ranked_results]
+    print("Advanced Reranking:")
+    print(output_scores)
+
+    return output_docs 
+
+@app.post("/search_reranking_advance", response_model=List)
+def rerank_advance_from_all_courses(question: str):
+    return combine_advance_reranking(question) 
   
 
 
