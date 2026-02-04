@@ -39,6 +39,11 @@ spec:
       labels:
         app: cyberfaces-rag
     spec:
+      tolerations:
+      - key: hub.jupyter.org/dedicated
+        operator: Equal
+        value: gpu
+        effect: NoSchedule
       containers:
       - name: cyberfaces-rag
         image: registry.anvil.rcac.purdue.edu/cyberfaces/cyberfaces-rag:latest
@@ -70,6 +75,7 @@ spec:
           limits:
             memory: "4Gi"
             cpu: "4000m"
+            nvidia.com/mig-1g.10gb: "1"
         # livenessProbe:
         #   httpGet:
         #     path: /docs
