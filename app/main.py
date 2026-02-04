@@ -197,8 +197,8 @@ def get_courses_from_keywords(query, num_retrieval=num_retrieval):
     max_score = np.max(doc_scores)
     min_score = np.min(doc_scores)
 
-    #normalize the score to 0-1
-    top_scores = [(doc_scores[i]-min_score)/(max_score-min_score) for i in top_n_indices]
+   #top_scores = [(doc_scores[i]-min_score)/(max_score-min_score) for i in top_n_indices]
+    top_scores = [doc_scores[i] for i in top_n_indices]
     top_docs = [docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
     #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
     #print(f"Top matches: {top_scores}")
