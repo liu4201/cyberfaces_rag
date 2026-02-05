@@ -9,4 +9,3 @@ sentence_transformers
 Rank-bm25
 nltk
 numpy
-ranx
