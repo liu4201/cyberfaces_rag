@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 
 #==========================Semantic Engine=================================
 
-num_retrieval=5
+num_retrieval=6
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -82,11 +82,11 @@ def rewrite_query_with_llm(question):
         "stream": False
     }
     response = requests.post(url, headers=headers, json=body)
-    print(response)
-    if response.status_code == 200:
-        print(response.text)
-    else:
-        raise Exception(f"Error: {response.status_code}, {response.text}")
+    # print(response)
+    # if response.status_code == 200:
+    #     print(response.text)
+    # else:
+    #     raise Exception(f"Error: {response.status_code}, {response.text}")
     return json.loads(response.text)["choices"][0]["message"]["content"]
 
 def get_courses(question, vectordb, num_retrieval=num_retrieval):
@@ -146,7 +146,7 @@ def load_vectorDB_docs():
                 else:
                     docs[i].page_content = original_data.get("title") + "|" + docs[i].page_content
     
-    print(docs)
+    #print(docs)
     
     embeddings = HuggingFaceEmbeddings(model_name= "sentence-transformers/" + "all-mpnet-base-v2")
     
@@ -193,6 +193,10 @@ def search_semantic_from_all_courses(question: str, request: Request):
 # this implement BM25 keywords search
 # Download necessary data
 
+def clean_token(w):
+    # Allow alphanumeric characters, "/", and "-"
+    return "".join(char for char in w if char.isalnum() or char == "-")
+
 def deep_clean_query(query, stemmer):
     stop_words = set(stopwords.words('english'))
     tokens = word_tokenize(query.lower())
@@ -215,6 +219,7 @@ def load_keyword_docs(docs):
     
     # 2. Initialize the BM25 object
     bm25 = BM25Okapi(bm25_docs)
+
 
     return bm25, stemmer
 
@@ -310,23 +315,30 @@ def load_rerankers():
     print(f"MiniLM Device: {base_model.model.device}")
 
     # Advanced model
-    model_name = 'Qwen/Qwen3-Reranker-0.6B'
+    #model_name = 'Qwen/Qwen3-Reranker-0.6B'
+    # model_name = 'zeroentropy/zerank-2'
     
-    # 1. Manually load and fix the tokenizer first
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # # 1. Manually load and fix the tokenizer first
+    # tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # if tokenizer.pad_token is None:
+    #     tokenizer.pad_token = tokenizer.eos_token
     
-    # 2. Pass the fixed tokenizer into the CrossEncoder
+    # # 2. Pass the fixed tokenizer into the CrossEncoder
+    # rerank_model_advance = CrossEncoder(
+    #     model_name, 
+    #     max_length=512, 
+    #     tokenizer_args={'pad_token': tokenizer.pad_token},
+    #     trust_remote_code=True
+    # )
+    # # 3. Explicitly set it on the underlying model just to be safe
+    # rerank_model_advance.model.config.pad_token_id = tokenizer.pad_token_id
+
     rerank_model_advance = CrossEncoder(
-        model_name, 
-        max_length=512, 
-        tokenizer_args={'pad_token': tokenizer.pad_token}
-    )
+        'jinaai/jina-reranker-v2-base-multilingual',
+        trust_remote_code=True)
     
-    # 3. Explicitly set it on the underlying model just to be safe
-    rerank_model_advance.model.config.pad_token_id = tokenizer.pad_token_id
-    print(f"Qwen Device: {rerank_model_advance.model.device}")
+    print(f"Advanced rerank Device: {rerank_model_advance.model.device}")
+    print(f"Advanced rerank structure: {rerank_model_advance.model}")
 
     return base_model, rerank_model_advance
 
