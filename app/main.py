@@ -19,10 +19,16 @@ from transformers import AutoTokenizer
 import time
 from functools import wraps
 from contextlib import asynccontextmanager
+import re
+from dotenv import load_dotenv, find_dotenv
+import requests
 
 #==========================Semantic Engine=================================
 
 num_retrieval=6
+_ = load_dotenv(find_dotenv()) # read local .env file
+api_key  = os.environ['ANVILGPT_API']
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,24 +67,40 @@ def timer_decorator(func):
     return wrapper
 
 def rewrite_query_with_llm(question):
+    
+    prompt= """
 
-    url = "https://genai.rcac.purdue.edu/api/chat/completions"
+    ### Role
+    You are an Academic Curriculum Designer. Your task is to transform casual or informal user queries into professional, high-impact course descriptions suitable for a university or professional training catalog.
+    
+    ### Objectives
+    1. **Academic Tone:** Use formal, pedagogical language (e.g., "examine," "master," "synthesize," "foundational principles").
+    2. **Vocabulary Mirroring:** Identify core keywords or technical concepts in the user's query and weave them into the formal description to ensure the course remains relevant to their intent.
+    3. **Structure:** The output must be exactly one to three sentences long.
+    4. **Directness:** Provide only the rewritten description. Do not include introductory text like "Here is your description."
+    
+    ### Example
+    * **User Query:** "I want to learn how to make cool websites with React and make them look good on phones."
+    * **Rewritten Description:** "This course provides a comprehensive deep dive into building responsive web applications using the React framework. Students will master front-end architecture and mobile-first design principles to create seamless, high-performance user interfaces."
+    """
+    url = "https://anvilgpt.rcac.purdue.edu/api/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     body = {
-        "model": model_name,
+        "model": "gpt-oss:120b",
         "messages": [
         {
             "role": "system",
-            "content": "You rewrite user input as a concise search query for courses"
+            "content": prompt
         },
         {
             "role": "user",
             "content": question   
         }
         ],
+        "temperature": 0,
         "stream": False
     }
     response = requests.post(url, headers=headers, json=body)
@@ -89,6 +111,7 @@ def rewrite_query_with_llm(question):
     #     raise Exception(f"Error: {response.status_code}, {response.text}")
     return json.loads(response.text)["choices"][0]["message"]["content"]
 
+@timer_decorator
 def get_courses(question, vectordb, num_retrieval=num_retrieval):
     results = vectordb.similarity_search_with_relevance_scores(question, k=num_retrieval)
     #docs = vectordb.similarity_search(question,k=num_retrieval)
@@ -198,11 +221,20 @@ def clean_token(w):
     return "".join(char for char in w if char.isalnum() or char == "-")
 
 def deep_clean_query(query, stemmer):
+
     stop_words = set(stopwords.words('english'))
+
+    # Pre-process hyphens and slashes
+    query = query.replace('-', '').replace('/', ' ')
+
     tokens = word_tokenize(query.lower())
-    
+
+    # Use a Regex that allows letters, numbers, and tech symbols (#, +)
+    # This rejects "pure" punctuation like "." or "!"
+    tech_pattern = re.compile(r'^[a-z0-9+#]+$')
+
     # Remove stopwords AND stem the remaining words
-    cleaned = [stemmer.stem(w) for w in tokens if w.isalpha() and w not in stop_words]
+    cleaned = [stemmer.stem(w) for w in tokens if (w.isalpha() or tech_pattern.match(w)) and w not in stop_words]
     
     return cleaned
 
@@ -224,6 +256,7 @@ def load_keyword_docs(docs):
     return bm25, stemmer
 
 # 3. Clean query to get non-stopping keywords and search
+@timer_decorator
 def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
     # the docs returned here from the chorma vectorbase with the same format as semantic search
@@ -237,9 +270,17 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
     min_score = np.min(doc_scores)
 
    #top_scores = [(doc_scores[i]-min_score)/(max_score-min_score) for i in top_n_indices]
-    top_scores = [doc_scores[i] for i in top_n_indices]
+    top_scores = [doc_scores[i]/len(bm25_query) for i in top_n_indices] # apply Query-Length Normalization
     top_docs = [request.app.state.docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
     #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
+
+    # all_idfs = request.app.state.bm25_obj.idf.values()
+    # avg_idf = sum(all_idfs) / len(all_idfs)
+    # median_idf = np.median(list(all_idfs))
+    
+    # print(f"Average IDF: {avg_idf:.2f}")
+    # print(f"Median IDF: {median_idf:.2f}")
+
     print(f"keyword matches: {top_scores}")
 
     return top_docs, top_scores
@@ -338,7 +379,7 @@ def load_rerankers():
         trust_remote_code=True)
     
     print(f"Advanced rerank Device: {rerank_model_advance.model.device}")
-    print(f"Advanced rerank structure: {rerank_model_advance.model}")
+    #print(f"Advanced rerank structure: {rerank_model_advance.model}")
 
     return base_model, rerank_model_advance
 
@@ -357,16 +398,18 @@ def combine_reranking(question, request):
     for doc in keyword_docs:
         if doc.metadata["id"] not in seen:
             combined_docs.append(doc)
-
+    
+    question = rewrite_query_with_llm(question)
+    print(question)
     pairs = [[question, doc.page_content] for doc in combined_docs]
 
     scores = request.app.state.base_model.predict(pairs)
 
     ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True) 
 
-    output_docs= [result[1] for result in ranked_results if result[0]> -0.3]
+    output_docs= [result[1] for result in ranked_results] #if result[0]> -0.3
 
-    output_scores = [result[0] for result in ranked_results if result[0]> -0.3]
+    output_scores = [result[0] for result in ranked_results] # if result[0]> -0.3
     print("Base Reranking:")
     print(output_scores)
 
@@ -374,6 +417,8 @@ def combine_reranking(question, request):
 
 @app.post("/search_reranking_base", response_model=List)
 def rerank_from_all_courses(question: str, request: Request):
+    #question = rewrite_query_with_llm(question)
+    #print(question)
     return combine_reranking(question, request)  
 
 
@@ -393,6 +438,8 @@ def combine_advance_reranking(question, request):
         if doc.metadata["id"] not in seen:
             combined_docs.append(doc)
 
+    question = rewrite_query_with_llm(question)
+    print(question)
     pairs = [[question, doc.page_content] for doc in combined_docs]
 
     scores = app.state.advance_model.predict(pairs)
@@ -409,6 +456,8 @@ def combine_advance_reranking(question, request):
 
 @app.post("/search_reranking_advance", response_model=List)
 def rerank_advance_from_all_courses(question: str, request: Request):
+    #question = rewrite_query_with_llm(question)
+    #print(question)
     return combine_advance_reranking(question, request) 
   
 
