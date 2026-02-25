@@ -25,7 +25,7 @@ import requests
 
 #==========================Semantic Engine=================================
 
-num_retrieval=6
+num_retrieval=24
 _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
@@ -69,19 +69,37 @@ def timer_decorator(func):
 def rewrite_query_with_llm(question):
     
     prompt= """
+    Role: You are an expert Academic Research Assistant specializing in curriculum discovery.
 
-    ### Role
-    You are an Academic Curriculum Designer. Your task is to transform casual or informal user queries into professional, high-impact course descriptions suitable for a university or professional training catalog.
+    Objective: Transform a user’s brief input into a comprehensive, multi-dimensional search query designed to find relevant educational courses.
     
-    ### Objectives
-    1. **Academic Tone:** Use formal, pedagogical language (e.g., "examine," "master," "synthesize," "foundational principles").
-    2. **Vocabulary Mirroring:** Identify core keywords or technical concepts in the user's query and weave them into the formal description to ensure the course remains relevant to their intent.
-    3. **Structure:** The output must be exactly one to three sentences long.
-    4. **Directness:** Provide only the rewritten description. Do not include introductory text like "Here is your description."
+    Instructions:
     
-    ### Example
-    * **User Query:** "I want to learn how to make cool websites with React and make them look good on phones."
-    * **Rewritten Description:** "This course provides a comprehensive deep dive into building responsive web applications using the React framework. Students will master front-end architecture and mobile-first design principles to create seamless, high-performance user interfaces."
+    Deconstruct the Intent: Identify the core subject matter.
+    
+    Expand Vocabulary: Do not just rewrite the prompt. Instead, augment it with:
+    
+    Synonyms & Semantics: Include related industry terms and academic jargon.
+    
+    Contextual Keywords: Add relevant software, methodologies, or foundational theories associated with the topic.
+    
+    Nested Disciplines: If the topic is broad, include specific sub-fields.
+    
+    Background Integration: Use your internal knowledge (or search capabilities) to include "hidden" requirements or prerequisites that would make the search more effective.
+    
+    Output Format: Provide a single, optimized search string that uses Boolean operators (OR/AND) where appropriate to maximize results.
+    
+    Why this works better:
+    Boolean Operators: Mentioning "OR/AND" forces the LLM to provide a structured query (e.g., "Data Science OR Machine Learning OR Predictive Analytics") which is far more effective for search engines.
+    
+    "Semantic Neighborhood": By asking for jargon and sub-fields, you prevent the model from staying too literal.
+        
+    Example of the result:
+    User Input: "classes for making apps"
+    
+    LLM Optimized Query: "Mobile App Development OR iOS Swift programming OR Android Kotlin development OR Flutter cross-platform UI design AND beginner software engineering principles"
+
+
     """
     url = "https://anvilgpt.rcac.purdue.edu/api/chat/completions"
     headers = {
@@ -121,10 +139,17 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     docs = [result[0] for result in results]
     scores = [result[1] for result in results]
 
+    for i in range(len(scores)):
+        if scores[i] <= 0.45:
+            out_scores = scores[0:i]
+            out_docs = docs[0:i]
+            break
+
     #print(scores)
     print(f"semantic matches: {scores}")
 
-    return docs, scores
+    #return docs, scores
+    return out_docs, out_scores
 
 app = FastAPI(title="Cyberfaces Smartsearch API", lifespan=lifespan)
 
@@ -266,13 +291,19 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
     # Get top N results
     top_n_indices = np.argsort(doc_scores)[::-1][:num_retrieval]
-    max_score = np.max(doc_scores)
-    min_score = np.min(doc_scores)
+    #max_score = np.max(doc_scores)
+    #min_score = np.min(doc_scores)
 
    #top_scores = [(doc_scores[i]-min_score)/(max_score-min_score) for i in top_n_indices]
     top_scores = [doc_scores[i]/len(bm25_query) for i in top_n_indices] # apply Query-Length Normalization
     top_docs = [request.app.state.docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
     #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
+    for i in range(len(top_scores)):
+        if top_scores[i] <= 1.00:
+            out_scores = top_scores[0:i]
+            out_docs = top_docs[0:i]
+            break
+
 
     # all_idfs = request.app.state.bm25_obj.idf.values()
     # avg_idf = sum(all_idfs) / len(all_idfs)
@@ -283,7 +314,8 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
     print(f"keyword matches: {top_scores}")
 
-    return top_docs, top_scores
+    #return top_docs, top_scores
+    return out_docs, out_scores
 
 
 @app.post("/search_lexical", response_model=List)
@@ -399,8 +431,9 @@ def combine_reranking(question, request):
         if doc.metadata["id"] not in seen:
             combined_docs.append(doc)
     
-    question = rewrite_query_with_llm(question)
-    print(question)
+    #question = rewrite_query_with_llm(question)
+    #print(question)
+
     pairs = [[question, doc.page_content] for doc in combined_docs]
 
     scores = request.app.state.base_model.predict(pairs)
@@ -440,7 +473,12 @@ def combine_advance_reranking(question, request):
 
     question = rewrite_query_with_llm(question)
     print(question)
-    pairs = [[question, doc.page_content] for doc in combined_docs]
+    instruction = "Given a search query, find documents that are broadly relevant to the topic, including synonyms and related concepts."
+    
+    # 2. Prepend the instruction to the query with a newline
+    query_with_instruction = f"instruction: {instruction}\n{question}"
+
+    pairs = [[query_with_instruction, doc.page_content] for doc in combined_docs]
 
     scores = app.state.advance_model.predict(pairs)
 
