@@ -25,7 +25,7 @@ import requests
 
 #==========================Semantic Engine=================================
 
-num_retrieval=24
+num_retrieval=6
 _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
@@ -69,36 +69,18 @@ def timer_decorator(func):
 def rewrite_query_with_llm(question):
     
     prompt= """
-    Role: You are an expert Academic Research Assistant specializing in curriculum discovery.
-
-    Objective: Transform a user’s brief input into a comprehensive, multi-dimensional search query designed to find relevant educational courses.
+    ### Role
+    You are an Academic Curriculum Designer. Your task is to transform casual or informal user queries into professional, high-impact course descriptions suitable for a university or professional training catalog.
     
-    Instructions:
+    ### Objectives
+    1. **Academic Tone:** Use formal, pedagogical language (e.g., "examine," "master," "synthesize," "foundational principles").
+    2. **Vocabulary Mirroring:** Identify core keywords or technical concepts in the user's query and weave them into the formal description to ensure the course remains relevant to their intent.
+    3. **Structure:** The output must be exactly one to three sentences long.
+    4. **Directness:** Provide only the rewritten description. Do not include introductory text like "Here is your description."
     
-    Deconstruct the Intent: Identify the core subject matter.
-    
-    Expand Vocabulary: Do not just rewrite the prompt. Instead, augment it with:
-    
-    Synonyms & Semantics: Include related industry terms and academic jargon.
-    
-    Contextual Keywords: Add relevant software, methodologies, or foundational theories associated with the topic.
-    
-    Nested Disciplines: If the topic is broad, include specific sub-fields.
-    
-    Background Integration: Use your internal knowledge (or search capabilities) to include "hidden" requirements or prerequisites that would make the search more effective.
-    
-    Output Format: Provide a single, optimized search string that uses Boolean operators (OR/AND) where appropriate to maximize results.
-    
-    Why this works better:
-    Boolean Operators: Mentioning "OR/AND" forces the LLM to provide a structured query (e.g., "Data Science OR Machine Learning OR Predictive Analytics") which is far more effective for search engines.
-    
-    "Semantic Neighborhood": By asking for jargon and sub-fields, you prevent the model from staying too literal.
-        
-    Example of the result:
-    User Input: "classes for making apps"
-    
-    LLM Optimized Query: "Mobile App Development OR iOS Swift programming OR Android Kotlin development OR Flutter cross-platform UI design AND beginner software engineering principles"
-
+    ### Example
+    * **User Query:** "I want to learn how to make cool websites with React and make them look good on phones."
+    * **Rewritten Description:** "This course provides a comprehensive deep dive into building responsive web applications using the React framework. Students will master front-end architecture and mobile-first design principles to create seamless, high-performance user interfaces."
 
     """
     url = "https://anvilgpt.rcac.purdue.edu/api/chat/completions"
@@ -148,8 +130,8 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     #print(scores)
     print(f"semantic matches: {scores}")
 
-    #return docs, scores
-    return out_docs, out_scores
+    return docs, scores
+    #return out_docs, out_scores
 
 app = FastAPI(title="Cyberfaces Smartsearch API", lifespan=lifespan)
 
@@ -314,8 +296,8 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
     print(f"keyword matches: {top_scores}")
 
-    #return top_docs, top_scores
-    return out_docs, out_scores
+    return top_docs, top_scores
+    #return out_docs, out_scores
 
 
 @app.post("/search_lexical", response_model=List)
@@ -408,8 +390,18 @@ def load_rerankers():
 
     rerank_model_advance = CrossEncoder(
         'jinaai/jina-reranker-v2-base-multilingual',
-        trust_remote_code=True)
+        trust_remote_code=True,
+        automodel_args={"torch_dtype": "float32"})
+
+    # from transformers import AutoModel
     
+    # rerank_model_advance = AutoModel.from_pretrained(
+    #     'jinaai/jina-reranker-v3',
+    #     dtype="auto",
+    #     trust_remote_code=True
+    # )
+    # rerank_model_advance.eval()
+
     print(f"Advanced rerank Device: {rerank_model_advance.model.device}")
     #print(f"Advanced rerank structure: {rerank_model_advance.model}")
 
@@ -473,20 +465,32 @@ def combine_advance_reranking(question, request):
 
     question = rewrite_query_with_llm(question)
     print(question)
-    instruction = "Given a search query, find documents that are broadly relevant to the topic, including synonyms and related concepts."
+    instruction = "Given a course description, identify all documents that provide relevant information, even if they use different terminology or they are sub-topics. "
     
     # 2. Prepend the instruction to the query with a newline
-    query_with_instruction = f"instruction: {instruction}\n{question}"
+    query_with_instruction = f"instruction: {instruction}\nquery: {question}"
 
     pairs = [[query_with_instruction, doc.page_content] for doc in combined_docs]
+    #pairs = [[question, doc.page_content] for doc in combined_docs]
 
     scores = app.state.advance_model.predict(pairs)
 
-    ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True) 
+    ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True)
 
     output_docs= [result[1] for result in ranked_results]
 
     output_scores = [result[0] for result in ranked_results]
+
+    # docs= [doc.page_content for doc in combined_docs]
+    # ranked_results = app.state.advance_model.rerank(
+    #     query=query_with_instruction, 
+    #     documents=docs
+    # )
+
+    # output_docs= [result['document'] for result in ranked_results]
+
+    # output_scores = [result['relevance_score'] for result in ranked_results]
+
     print("Advanced Reranking:")
     print(output_scores)
 
