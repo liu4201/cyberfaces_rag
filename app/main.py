@@ -69,18 +69,27 @@ def timer_decorator(func):
 def rewrite_query_with_llm(question):
     
     prompt= """
-    ### Role
-    You are an Academic Curriculum Designer. Your task is to transform casual or informal user queries into professional, high-impact course descriptions suitable for a university or professional training catalog.
+    Role: You are an expert academic knowledge extractor assisting a precise Semantic Reranking AI.
     
-    ### Objectives
-    1. **Academic Tone:** Use formal, pedagogical language (e.g., "examine," "master," "synthesize," "foundational principles").
-    2. **Vocabulary Mirroring:** Identify core keywords or technical concepts in the user's query and weave them into the formal description to ensure the course remains relevant to their intent.
-    3. **Structure:** The output must be exactly one to three sentences long.
-    4. **Directness:** Provide only the rewritten description. Do not include introductory text like "Here is your description."
+    Objective: Expand a short user search query by providing a concise, factual definition to give the semantic model context. 
     
-    ### Example
-    * **User Query:** "I want to learn how to make cool websites with React and make them look good on phones."
-    * **Rewritten Description:** "This course provides a comprehensive deep dive into building responsive web applications using the React framework. Students will master front-end architecture and mobile-first design principles to create seamless, high-performance user interfaces."
+    Rules for Expansion:
+    1. Factual Definition Only: Write 1-3 sentences defining the core concept, acronym, or entity. Focus on "What is it?" and "What is its primary function?"
+    2. No Keyword Stuffing: Do NOT list specific courses, hypothetical document titles, or tangentially related jargon.
+    3. No Boolean Logic: Do NOT use "OR", "AND", or search engine operators. Write in natural, flowing English prose.
+    4. Format: Output ONLY the expanded text. Do not include labels like "Expanded Output:".
+    5. Anti-Hallucination (CRITICAL): If you are not 100% certain of the exact factual definition of the acronym or term, do NOT guess. Simply output the original user query exactly as written.
+    
+    Examples:
+    User Query: "I-GUIDE"
+    Output: I-GUIDE (Institute for Geospatial Understanding through an Integrative Discovery Environment) is an NSF-funded institute led by the University of Illinois, with partners like Purdue University, focused on geospatial research, sustainability, and spatial data infrastructure.
+    
+    User Query: "GIS"
+    Output: Geographic Information Systems (GIS) is a framework for gathering, managing, and analyzing spatial and geographic data using maps and 3D scenes.
+    
+    User Query: "XYZ123-unknown-term"
+    Output: XYZ123-unknown-term
+
 
     """
     url = "https://anvilgpt.rcac.purdue.edu/api/chat/completions"
@@ -465,7 +474,7 @@ def combine_advance_reranking(question, request):
 
     question = rewrite_query_with_llm(question)
     print(question)
-    instruction = "Given a course description, identify all documents that provide relevant information, even if they use different terminology or they are sub-topics. "
+    instruction = "Given a search query, evaluate if the Document is relevant to the Query. Rate the relevance on a scale from 0 to 1 based on these criteria: - 0 to 0.2: Completely irrelevant or off-topic. - 0.21 to 0.5: Tangentially related, but does not answer the user's intent. - 0.51 to 0.8: Relevant; provides useful information that partially answers the query. - 0.81 to 1: Highly relevant; directly and comprehensively answers the query. "
     
     # 2. Prepend the instruction to the query with a newline
     query_with_instruction = f"instruction: {instruction}\nquery: {question}"
