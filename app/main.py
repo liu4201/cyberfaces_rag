@@ -25,7 +25,7 @@ import requests
 
 #==========================Semantic Engine=================================
 
-num_retrieval=6
+num_retrieval=24
 _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
@@ -139,8 +139,8 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     #print(scores)
     print(f"semantic matches: {scores}")
 
-    return docs, scores
-    #return out_docs, out_scores
+    #return docs, scores
+    return out_docs, out_scores
 
 app = FastAPI(title="Cyberfaces Smartsearch API", lifespan=lifespan)
 
@@ -305,8 +305,8 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
     print(f"keyword matches: {top_scores}")
 
-    return top_docs, top_scores
-    #return out_docs, out_scores
+    #return top_docs, top_scores
+    return out_docs, out_scores
 
 
 @app.post("/search_lexical", response_model=List)
