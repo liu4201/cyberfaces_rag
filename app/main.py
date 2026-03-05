@@ -130,6 +130,9 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     docs = [result[0] for result in results]
     scores = [result[1] for result in results]
 
+    out_scores = docs
+    out_docs = scores
+
     for i in range(len(scores)):
         if scores[i] <= 0.45:
             out_scores = scores[0:i]
@@ -289,6 +292,10 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
     top_scores = [doc_scores[i]/len(bm25_query) for i in top_n_indices] # apply Query-Length Normalization
     top_docs = [request.app.state.docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
     #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
+
+    out_scores = top_docs
+    out_docs = top_scores
+
     for i in range(len(top_scores)):
         if top_scores[i] <= 1.00:
             out_scores = top_scores[0:i]
