@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cyberfaces-rag-data-pvc
+  namespace: cyberfaces-dev
+  labels:
+    app: cyberfaces-rag
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: anvil-filesystem
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cyberfaces-rag-data-sync
+  namespace: cyberfaces-dev
+  labels:
+    app: cyberfaces-rag
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          tolerations:
+          - key: hub.jupyter.org/dedicated
+            operator: Equal
+            value: gpu
+            effect: NoSchedule
+          restartPolicy: OnFailure
+          containers:
+          - name: data-sync
+            image: registry.anvil.rcac.purdue.edu/cyberfaces/cyberfaces-rag-data-sync:latest
+            imagePullPolicy: Always
+            env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: cyberfaces-db-secrets
+                  key: db-user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cyberfaces-db-secrets
+                  key: db-password
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: cyberfaces-db-secrets
+                  key: db-host
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: cyberfaces-db-secrets
+                  key: db-name
+            - name: TABLE
+              value: "course_units"
+            - name: DATA_DIR
+              value: "/data"
+            - name: CHROMADB_DIR
+              value: "/data/chromaDB"
+            volumeMounts:
+            - name: data-storage
+              mountPath: /data
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+          volumes:
+          - name: data-storage
+            persistentVolumeClaim:
+              claimName: cyberfaces-rag-data-pvc

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
 # 1. Install build tools and C++ compilers
@@ -13,13 +14,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# Copy only requirements first for better layer caching
 COPY requirements.txt .
-COPY data.jsonl .
 
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies (this layer will be cached unless requirements.txt changes)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
+# Copy application code after dependencies are installed
 COPY app ./app
-COPY chromaDB ./chromaDB
+RUN mkdir -p ./chromaDB
 
 # Expose FastAPI default port
 EXPOSE 8000

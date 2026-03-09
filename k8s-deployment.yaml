@@ -46,7 +46,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: cyberfaces-rag
-        image: registry.anvil.rcac.purdue.edu/cyberfaces/cyberfaces-rag:latest
+        image: registry.anvil.rcac.purdue.edu/cyberfaces/cyberfaces-rag:<GITSHA>
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -58,16 +58,20 @@ spec:
             configMapKeyRef:
               name: cyberfaces-rag-config
               key: PYTHONUNBUFFERED
-        # Add your .env variables here as environment variables
-        # Example:
-        # - name: API_KEY
-        #   valueFrom:
-        #     secretKeyRef:
-        #       name: cyberfaces-rag-secrets
-        #       key: api-key
+        - name: ANVILGPT_API
+          valueFrom:
+            secretKeyRef:
+              name: cyberfaces-rag-secrets
+              key: anvilgpt-api
+        - name: DATA_FILE_PATH
+          value: "/data/current/data.jsonl"
+        - name: CHROMADB_PATH
+          value: "/data/chromaDB"
         volumeMounts:
         - name: chromadb-storage
           mountPath: /app/chromaDB
+        - name: data-storage
+          mountPath: /data
         resources:
           requests:
             memory: "2Gi"
@@ -76,26 +80,29 @@ spec:
             memory: "4Gi"
             cpu: "4000m"
             nvidia.com/mig-1g.10gb: "1"
-        # livenessProbe:
-        #   httpGet:
-        #     path: /docs
-        #     port: 8000
-        #   initialDelaySeconds: 30
-        #   periodSeconds: 10
-        #   timeoutSeconds: 5
-        #   failureThreshold: 3
-        # readinessProbe:
-        #   httpGet:
-        #     path: /docs
-        #     port: 8000
-        #   initialDelaySeconds: 10
-        #   periodSeconds: 5
-        #   timeoutSeconds: 3
-        #   failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
       volumes:
       - name: chromadb-storage
         persistentVolumeClaim:
           claimName: cyberfaces-chromadb-pvc
+      - name: data-storage
+        persistentVolumeClaim:
+          claimName: cyberfaces-rag-data-pvc
 ---
 apiVersion: v1
 kind: Service

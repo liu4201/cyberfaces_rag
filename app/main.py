@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from typing import List, Dict, Tuple, Any
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -17,11 +18,19 @@ import numpy as np
 #from langchain_classic.retrievers import EnsembleRetriever
 from transformers import AutoTokenizer
 import time
+import threading
 from functools import wraps
 from contextlib import asynccontextmanager
 import re
 from dotenv import load_dotenv, find_dotenv
 import requests
+import logging
+
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record):
+        return "/healthz" not in record.getMessage()
+
+logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 #==========================Semantic Engine=================================
 
@@ -30,8 +39,52 @@ _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
 
+RELOAD_SIGNAL = os.environ.get('DATA_FILE_PATH', './data.jsonl').replace('data.jsonl', '.reload')
+
+def reload_data_if_needed(app):
+    """Check for .reload signal and hot-reload data."""
+    if not os.path.exists(RELOAD_SIGNAL):
+        return
+
+    print("Reload signal detected. Hot-reloading data...")
+    try:
+        # Close old chromadb connection before CronJob-cleared dir is reopened.
+        # Without this, SQLite detects the deleted file (error 1032: DBMOVED)
+        # and puts the connection into readonly mode, blocking the new client.
+        try:
+            app.state.vectordb._client.close()
+        except Exception as e:
+            print(f"Warning: could not close old vectordb client: {e}")
+
+        vectordb, docs = load_vectorDB_docs()
+        bm25_obj, stemmer = load_keyword_docs(docs)
+        docs_map = {str(doc.metadata["id"]): doc for doc in docs}
+
+        # Atomic swap of app.state
+        app.state.vectordb = vectordb
+        app.state.docs = docs
+        app.state.bm25_obj = bm25_obj
+        app.state.stemmer = stemmer
+        app.state.docs_map = docs_map
+
+        os.remove(RELOAD_SIGNAL)
+        print("Hot-reload complete.")
+    except Exception as e:
+        print(f"Hot-reload failed: {e}")
+
+def background_watcher(app, interval=10):
+    """Periodically check for reload signal."""
+    while True:
+        time.sleep(interval)
+        reload_data_if_needed(app)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+    # Remove stale reload signal on startup
+    if os.path.exists(RELOAD_SIGNAL):
+        os.remove(RELOAD_SIGNAL)
+        print(f"Removed stale reload signal: {RELOAD_SIGNAL}")
 
     print("Loading Data...")
     vectordb, docs = load_vectorDB_docs()
@@ -40,7 +93,7 @@ async def lifespan(app: FastAPI):
 
     print("Loading Models...")
     base_model, advance_model = load_rerankers()
-    
+
     # Store them in app.state
     app.state.vectordb = vectordb
     app.state.docs = docs
@@ -50,8 +103,12 @@ async def lifespan(app: FastAPI):
     app.state.base_model = base_model
     app.state.advance_model = advance_model
 
-    yield  
-    
+    watcher = threading.Thread(target=background_watcher, args=(app, 10), daemon=True)
+    watcher.start()
+    print("Background data watcher started (interval=10s)")
+
+    yield
+
     # --- CLEANUP (Shutdown) ---
     print("Shutting down... releasing resources.")
 
@@ -147,6 +204,10 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
 
 app = FastAPI(title="Cyberfaces Smartsearch API", lifespan=lifespan)
 
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
 # def metadata_func(record: dict, metadata: dict) -> dict:
 #     metadata["id"] = record.get("id")
 #     metadata["title"] = record.get("title")
@@ -159,7 +220,7 @@ app = FastAPI(title="Cyberfaces Smartsearch API", lifespan=lifespan)
 def load_vectorDB_docs():
     # 1. Load each line of the jsonl file.
     
-    file_path = './data.jsonl'
+    file_path = os.environ.get('DATA_FILE_PATH', './data.jsonl')
     
     loader = JSONLoader(
         file_path=file_path,
@@ -197,8 +258,9 @@ def load_vectorDB_docs():
         with os.scandir(path) as it:
             return not any(it)
     
-    persist_directory = './chromaDB'
-    
+    persist_directory = os.environ.get('CHROMADB_PATH', './chromaDB')
+    os.makedirs(persist_directory, exist_ok=True)
+
     # Chroma handles the embedding automatically upon adding documents.
     if is_dir_empty(persist_directory):
         vectordb = Chroma.from_documents(
