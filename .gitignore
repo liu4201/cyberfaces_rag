@@ -1,1 +1,5 @@
 .env
+# Ignore ChromaDB local database and binaries
+chromaDB/
+*.sqlite3
+*.bin
