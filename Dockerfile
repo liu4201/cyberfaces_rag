@@ -16,6 +16,7 @@ WORKDIR /app
 
 # Copy only requirements first for better layer caching
 COPY requirements.txt .
+#COPY data.jsonl .
 
 # Install dependencies (this layer will be cached unless requirements.txt changes)
 RUN --mount=type=cache,target=/root/.cache/pip \
