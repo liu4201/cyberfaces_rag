@@ -25,6 +25,7 @@ import re
 from dotenv import load_dotenv, find_dotenv
 import requests
 import logging
+from readerwriterlock import rwlock
 
 class HealthCheckFilter(logging.Filter):
     def filter(self, record):
@@ -51,21 +52,22 @@ def reload_data_if_needed(app):
         # Close old chromadb connection before CronJob-cleared dir is reopened.
         # Without this, SQLite detects the deleted file (error 1032: DBMOVED)
         # and puts the connection into readonly mode, blocking the new client.
-        try:
-            app.state.vectordb._client.close()
-        except Exception as e:
-            print(f"Warning: could not close old vectordb client: {e}")
-
-        vectordb, docs = load_vectorDB_docs()
-        bm25_obj, stemmer = load_keyword_docs(docs)
-        docs_map = {str(doc.metadata["id"]): doc for doc in docs}
-
-        # Atomic swap of app.state
-        app.state.vectordb = vectordb
-        app.state.docs = docs
-        app.state.bm25_obj = bm25_obj
-        app.state.stemmer = stemmer
-        app.state.docs_map = docs_map
+        with app.state.reload_rwlock.gen_wlock():
+            try:
+                app.state.vectordb._client.close()
+            except Exception as e:
+                print(f"Warning: could not close old vectordb client: {e}")
+    
+            vectordb, docs = load_vectorDB_docs()
+            bm25_obj, stemmer = load_keyword_docs(docs)
+            docs_map = {str(doc.metadata["id"]): doc for doc in docs}
+    
+            # Atomic swap of app.state
+            app.state.vectordb = vectordb
+            app.state.docs = docs
+            app.state.bm25_obj = bm25_obj
+            app.state.stemmer = stemmer
+            app.state.docs_map = docs_map
 
         os.remove(RELOAD_SIGNAL)
         print("Hot-reload complete.")
@@ -80,6 +82,9 @@ def background_watcher(app, interval=10):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+    # Initialize the lock and store it in app.state
+    app.state.reload_rwlock = rwlock.RWLockFair()
 
     # Remove stale reload signal on startup
     if os.path.exists(RELOAD_SIGNAL):
@@ -339,7 +344,10 @@ def load_vectorDB_docs():
 
 @app.post("/search_semantic", response_model=List)
 def search_semantic_from_all_courses(question: str, request: Request):
-    docs, scores = get_courses(question, request.app.state.vectordb, num_retrieval=num_retrieval) 
+    # Acquire the READ lock
+    # Multiple threads can enter this 'gen_rlock' block at the same time.
+    with app.state.reload_rwlock.gen_rlock():
+        docs, scores = get_courses(question, request.app.state.vectordb, num_retrieval=num_retrieval) 
     #docs = [result[0] for result in results]
     #docs =  semantic_retriever.invoke(question)  
     return docs
@@ -431,7 +439,10 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
 @app.post("/search_lexical", response_model=List)
 async def search_lexical_from_all_courses(question: str, request: Request):
-    docs, scores = get_courses_from_keywords(question, request, num_retrieval=num_retrieval)    
+    # Acquire the READ lock
+    # Multiple threads can enter this 'gen_rlock' block at the same time.
+    with app.state.reload_rwlock.gen_rlock():
+        docs, scores = get_courses_from_keywords(question, request, num_retrieval=num_retrieval)    
     return docs
 
 #==========================Lexical Engine2=================================
@@ -489,7 +500,10 @@ def combine_manual_rrf(question, request):
 
 @app.post("/search_RRF", response_model=List)
 def search_from_all_courses(question: str, request: Request):
-    return combine_manual_rrf(question, request)
+    # Acquire the READ lock
+    # Multiple threads can enter this 'gen_rlock' block at the same time.
+    with app.state.reload_rwlock.gen_rlock():
+        return combine_manual_rrf(question, request)
 
 #========================== Reranking =====================================
 
@@ -573,7 +587,10 @@ def combine_reranking(question, request):
 def rerank_from_all_courses(question: str, request: Request):
     #question = rewrite_query_with_llm(question)
     #print(question)
-    return combine_reranking(question, request)  
+    # Acquire the READ lock
+    # Multiple threads can enter this 'gen_rlock' block at the same time.
+    with app.state.reload_rwlock.gen_rlock():
+        return combine_reranking(question, request)  
 
 
 @timer_decorator
@@ -651,11 +668,17 @@ def combine_llm_scores(question, request):
 def rerank_advance_from_all_courses(question: str, request: Request):
     #question = rewrite_query_with_llm(question)
     #print(question)
-    return combine_advance_reranking(question, request) 
+    # Acquire the READ lock
+    # Multiple threads can enter this 'gen_rlock' block at the same time.
+    with app.state.reload_rwlock.gen_rlock():
+        return combine_advance_reranking(question, request) 
   
 @app.post("/search_llm_scores", response_model=List)
 def rerank_llm_scores(question: str, request: Request):
     #question = rewrite_query_with_llm(question)
     #print(question)
-    return json.loads(combine_llm_scores(question, request)) 
+    # Acquire the READ lock
+    # Multiple threads can enter this 'gen_rlock' block at the same time.
+    with app.state.reload_rwlock.gen_rlock():
+        return json.loads(combine_llm_scores(question, request)) 
 

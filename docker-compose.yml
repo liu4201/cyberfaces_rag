@@ -5,8 +5,8 @@ services:
     container_name: cyberface-rag
     ports:
       - "8000:8000"
-    volumes:
-      - ./chromaDB/:/app/chromaDB/
+#    volumes:
+#      - ./chromaDB/:/app/chromaDB/
     environment:
       - PYTHONUNBUFFERED=1
     env_file:
