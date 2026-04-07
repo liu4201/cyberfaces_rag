@@ -46,7 +46,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: cyberfaces-rag
-        image: registry.anvil.rcac.purdue.edu/cyberfaces/cyberfaces-rag:<GITSHA>
+        image: registry.anvil.rcac.purdue.edu/cyberfaces/cyberfaces-rag:d27bfc2
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

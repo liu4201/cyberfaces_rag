@@ -11,7 +11,7 @@ spec:
   storageClassName: anvil-filesystem
   resources:
     requests:
-      storage: 2Gi
+      storage: 10Gi
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -21,7 +21,7 @@ metadata:
   labels:
     app: cyberfaces-rag
 spec:
-  schedule: "*/15 * * * *"
+  schedule: "0 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
