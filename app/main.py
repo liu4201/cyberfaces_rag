@@ -191,7 +191,7 @@ def score_with_llm(documents, question):
     
     Evaluate each Course Description against the query.
     
-    Output your results strictly as a list of scores, where the index of each score matches the index of the corresponding course description.
+    Output a list of scores where each index corresponds to the Course Descriptions list. The output list length must equal the input list length.
     
     Course Query:
     {question}
@@ -250,8 +250,8 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     #print(scores)
     print(f"semantic matches: {scores}")
 
-    #return docs, scores
-    return out_docs, out_scores
+    return docs, scores
+    #return out_docs, out_scores
 
 app = FastAPI(title="Cyberfaces Smartsearch API", lifespan=lifespan)
 
@@ -425,8 +425,8 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
     print(f"keyword matches: {top_scores}")
 
-    #return top_docs, top_scores
-    return out_docs, out_scores
+    return top_docs, top_scores
+    #return out_docs, out_scores
 
 
 @app.post("/search_lexical", response_model=List)
@@ -642,9 +642,54 @@ def combine_llm_scores(question, request):
             combined_docs.append(doc)
 
     doc_list = [doc.page_content for doc in combined_docs]
-    print(doc_list)
-    return score_with_llm(doc_list, question)
 
+    #print(len(doc_list))
+    
+    max_retries = 3
+    attempts = 0
+    
+    while attempts < max_retries:
+        try:
+            # Get raw response from LLM
+            raw_response = score_with_llm(doc_list, question)
+            doc_scores = json.loads(raw_response)
+    
+            # Check if the length matches
+            if len(doc_scores) == len(doc_list):
+                break
+            else:
+                print(f"Attempt {attempts + 1}: Length mismatch. Retrying...")
+                
+        except (json.JSONDecodeError, TypeError):
+            print(f"Attempt {attempts + 1}: Invalid JSON format. Retrying...")
+        
+        attempts += 1
+    
+    if attempts == max_retries:
+        print("Failed to get valid scores after maximum retries.")
+    
+    top_n_indices = np.argsort(doc_scores)[::-1]
+    # print(top_n_indices)
+    # print(len(doc_scores))
+    # print(len(combined_docs))
+
+    # print(doc_list[41])
+    # print(combined_docs[41])
+
+    top_scores = [doc_scores[i] for i in top_n_indices]
+    top_docs = [combined_docs[i] for i in top_n_indices]  
+
+    out_scores = top_scores
+    out_docs = top_docs
+
+    for i in range(len(top_scores)):
+        if top_scores[i] <= 0.5:
+            out_scores = top_scores[0:i]
+            out_docs = top_docs[0:i]
+            break
+
+    #return top_docs, top_scores
+    return out_docs, out_scores
 
 
 @app.post("/search_reranking_advance", response_model=List)
@@ -657,5 +702,10 @@ def rerank_advance_from_all_courses(question: str, request: Request):
 def rerank_llm_scores(question: str, request: Request):
     #question = rewrite_query_with_llm(question)
     #print(question)
-    return json.loads(combine_llm_scores(question, request)) 
+    # Acquire the READ lock
+    # Multiple threads can enter this 'gen_rlock' block at the same time.
+    with app.state.reload_rwlock.gen_rlock():
+        top_docs, top_scores = combine_llm_scores(question, request)
+        print(top_scores)
+        return top_docs
 
