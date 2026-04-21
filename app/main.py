@@ -704,8 +704,7 @@ def rerank_llm_scores(question: str, request: Request):
     #print(question)
     # Acquire the READ lock
     # Multiple threads can enter this 'gen_rlock' block at the same time.
-    with app.state.reload_rwlock.gen_rlock():
-        top_docs, top_scores = combine_llm_scores(question, request)
-        print(top_scores)
-        return top_docs
+    top_docs, top_scores = combine_llm_scores(question, request)
+    print(top_scores)
+    return top_docs
 
