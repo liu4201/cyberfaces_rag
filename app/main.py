@@ -25,6 +25,7 @@ import re
 from dotenv import load_dotenv, find_dotenv
 import requests
 import logging
+import pandas as pd
 
 class HealthCheckFilter(logging.Filter):
     def filter(self, record):
@@ -35,6 +36,9 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 #==========================Semantic Engine=================================
 
 num_retrieval=24
+k_list = [5, 10, 20]
+keyword_threshold = 0.8 #1.00
+
 _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
@@ -167,7 +171,7 @@ def rewrite_query_with_llm(question):
     #     raise Exception(f"Error: {response.status_code}, {response.text}")
     return json.loads(response.text)["choices"][0]["message"]["content"]
 
-def score_with_llm(documents, question):
+def score_with_llm(length, documents, question):
     
     # Use an f-string to inject the variables into the prompt:
     prompt= f"""
@@ -191,7 +195,7 @@ def score_with_llm(documents, question):
     
     Evaluate each Course Description against the query.
     
-    Output a list of scores where each index corresponds to the Course Descriptions list. The output list length must equal the input list length.
+    Output a list of scores strictly with the list length: {length}.
     
     Course Query:
     {question}
@@ -238,6 +242,22 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     docs = [result[0] for result in results]
     scores = [result[1] for result in results]
 
+    #print(scores)
+    print(f"semantic matches: {scores}")
+
+    return docs, scores
+    
+
+@timer_decorator
+def get_courses_with_threshold(question, vectordb, num_retrieval=num_retrieval):
+    results = vectordb.similarity_search_with_relevance_scores(question, k=num_retrieval)
+    #docs = vectordb.similarity_search(question,k=num_retrieval)
+    #results = vectordb.similarity_search_with_score(question,k=num_retrieval)
+    # for doc in docs:
+    #     print(doc.metadata)
+    docs = [result[0] for result in results]
+    scores = [result[1] for result in results]
+
     out_scores = scores
     out_docs = docs
 
@@ -250,8 +270,8 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     #print(scores)
     print(f"semantic matches: {scores}")
 
-    return docs, scores
-    #return out_docs, out_scores
+    #return docs, scores
+    return out_docs, out_scores
 
 app = FastAPI(title="Cyberfaces Smartsearch API", lifespan=lifespan)
 
@@ -406,11 +426,34 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
     top_docs = [request.app.state.docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
     #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
 
+    print(f"keyword matches: {top_scores}")
+
+    return top_docs, top_scores
+
+
+@timer_decorator
+def get_courses_with_threshold_from_keywords(query, request, num_retrieval=num_retrieval):
+
+    # the docs returned here from the chorma vectorbase with the same format as semantic search
+    
+    bm25_query = deep_clean_query(query, request.app.state.stemmer)
+    doc_scores = request.app.state.bm25_obj.get_scores(bm25_query)
+
+    # Get top N results
+    top_n_indices = np.argsort(doc_scores)[::-1][:num_retrieval]
+    #max_score = np.max(doc_scores)
+    #min_score = np.min(doc_scores)
+
+   #top_scores = [(doc_scores[i]-min_score)/(max_score-min_score) for i in top_n_indices]
+    top_scores = [doc_scores[i]/len(bm25_query) for i in top_n_indices] # apply Query-Length Normalization
+    top_docs = [request.app.state.docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
+    #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
+
     out_scores = top_scores
     out_docs = top_docs
 
     for i in range(len(top_scores)):
-        if top_scores[i] <= 1.00:
+        if top_scores[i] <= keyword_threshold:
             out_scores = top_scores[0:i]
             out_docs = top_docs[0:i]
             break
@@ -425,8 +468,7 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
 
     print(f"keyword matches: {top_scores}")
 
-    return top_docs, top_scores
-    #return out_docs, out_scores
+    return out_docs, out_scores
 
 
 @app.post("/search_lexical", response_model=List)
@@ -479,18 +521,29 @@ def manual_rrf(semantic_docs, keyword_docs, docs_map, k=60):
     print("RRF:")
     print(scores)
 
-    return output_docs
+    return output_docs, scores
 
 @timer_decorator
 def combine_manual_rrf(question, request):    
-    semantic_docs, semantic_scores = get_courses(question, request.app.state.vectordb, num_retrieval=num_retrieval)
-    keyword_docs, keyword_scores = get_courses_from_keywords(question, request, num_retrieval=num_retrieval)
+    semantic_docs, semantic_scores = get_courses_with_threshold(question, request.app.state.vectordb, num_retrieval=num_retrieval)
+    keyword_docs, keyword_scores = get_courses_with_threshold_from_keywords(question, request, num_retrieval=num_retrieval)
     return manual_rrf(semantic_docs, keyword_docs, request.app.state.docs_map)
 
 @app.post("/search_RRF", response_model=List)
 def search_from_all_courses(question: str, request: Request):
-    return combine_manual_rrf(question, request)
+    docs, scores = combine_manual_rrf(question, request)
+    return docs
 
+@timer_decorator
+def combine_all_manual_rrf(question, request):    
+    semantic_docs, semantic_scores = get_courses(question, request.app.state.vectordb, num_retrieval=num_retrieval)
+    keyword_docs, keyword_scores = get_courses_from_keywords(question, request, num_retrieval=num_retrieval)
+    return manual_rrf(semantic_docs, keyword_docs, request.app.state.docs_map)
+
+@app.post("/search_RRF_all_candidates", response_model=List)
+def search_from_all_courses_all_candidates(question: str, request: Request):
+    docs, scores = combine_all_manual_rrf(question, request)
+    return docs
 #========================== Reranking =====================================
 
 def load_rerankers():
@@ -611,19 +664,41 @@ def combine_advance_reranking(question, request):
     # output_scores = [result[0] for result in ranked_results]
 
     docs= [doc.page_content for doc in combined_docs]
-    ranked_results = app.state.advance_model.rerank(
-        query=query_with_instruction, 
-        documents=docs
-    )
+    try:
+        ranked_results = app.state.advance_model.rerank(
+            query=query_with_instruction, 
+            documents=docs
+        )
 
-    output_docs= [result['document'] for result in ranked_results]
+        #output_docs= [result['document'] for result in ranked_results]
+    
+        output_scores = [result['relevance_score'] for result in ranked_results]
+    
+        ranked_results = sorted(zip(output_scores, combined_docs), key=lambda x: x[0], reverse=True)
+    
+        output_docs= [result[1] for result in ranked_results]
+    
+        print("Advanced Reranking:")
+        print(output_scores)
+    
+        return output_docs, output_scores 
 
-    output_scores = [result['relevance_score'] for result in ranked_results]
+    except ZeroDivisionError:
+        print(f"Reranker failed for query: {query_with_instruction}")
+        # Fallback: return original results without reranking
+        return [], []
 
-    print("Advanced Reranking:")
-    print(output_scores)
+@timer_decorator
+def combine_advance_reranking_with_threshold(question, request, threshold): 
+    docs, scores = combine_advance_reranking(question, request)
 
-    return output_docs 
+    ranked_results = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+
+    output_docs= [result[1] for result in ranked_results if result[0]> threshold] #
+
+    output_scores = [result[0] for result in ranked_results if result[0]> threshold] 
+
+    return output_docs, output_scores
 
 @timer_decorator
 def combine_llm_scores(question, request):    
@@ -651,7 +726,7 @@ def combine_llm_scores(question, request):
     while attempts < max_retries:
         try:
             # Get raw response from LLM
-            raw_response = score_with_llm(doc_list, question)
+            raw_response = score_with_llm(len(doc_list), doc_list, question)
             doc_scores = json.loads(raw_response)
     
             # Check if the length matches
@@ -668,35 +743,49 @@ def combine_llm_scores(question, request):
     if attempts == max_retries:
         print("Failed to get valid scores after maximum retries.")
     
-    top_n_indices = np.argsort(doc_scores)[::-1]
+    correct_doc_scores = doc_scores[:len(doc_list)]
+    top_n_indices = np.argsort(correct_doc_scores)[::-1]
     # print(top_n_indices)
-    # print(len(doc_scores))
-    # print(len(combined_docs))
+    print(len(correct_doc_scores))
+    print(len(combined_docs))
 
     # print(doc_list[41])
     # print(combined_docs[41])
 
-    top_scores = [doc_scores[i] for i in top_n_indices]
+    top_scores = [correct_doc_scores[i] for i in top_n_indices]
     top_docs = [combined_docs[i] for i in top_n_indices]  
 
     out_scores = top_scores
     out_docs = top_docs
 
+    # for i in range(len(top_scores)):
+    #     if top_scores[i] <= 0.5:
+    #         out_scores = top_scores[0:i]
+    #         out_docs = top_docs[0:i]
+    #         break
+
+    return top_docs, top_scores
+    #return out_docs, out_scores
+
+@timer_decorator
+def combine_llm_scores_with_threshold(question, request, threshold): 
+    docs, scores = combine_llm_scores(question, request)
+    out_scores = scores
+    out_docs = docs
+
     for i in range(len(top_scores)):
-        if top_scores[i] <= 0.5:
+        if top_scores[i] <= threshold:
             out_scores = top_scores[0:i]
             out_docs = top_docs[0:i]
             break
-
-    #return top_docs, top_scores
     return out_docs, out_scores
-
 
 @app.post("/search_reranking_advance", response_model=List)
 def rerank_advance_from_all_courses(question: str, request: Request):
     #question = rewrite_query_with_llm(question)
     #print(question)
-    return combine_advance_reranking(question, request) 
+    docs, scores = combine_advance_reranking_with_threshold(question, request, -0.3)
+    return  docs
   
 @app.post("/search_llm_scores", response_model=List)
 def rerank_llm_scores(question: str, request: Request):
@@ -704,7 +793,195 @@ def rerank_llm_scores(question: str, request: Request):
     #print(question)
     # Acquire the READ lock
     # Multiple threads can enter this 'gen_rlock' block at the same time.
-    top_docs, top_scores = combine_llm_scores(question, request)
-    print(top_scores)
-    return top_docs
+    docs, scores = combine_llm_scores_with_threshold(question, request, 0.5)
+    print(scores)
+    return docs
 
+def load_eval_mapping(filepath):
+    query_map = {}
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            data = json.loads(line)
+            # Map query_id -> {text, expected_ids}
+            query_map[data['query_id']] = {
+                "text": data['user_query'],
+                "expected": set(data['expected_ids'])
+            }
+    return query_map
+
+def calculate_recall_at_k(actual, predicted, k_list=[5, 10, 20]):
+    """
+    Calculates Recall@k for multiple values of k.
+    
+    Args:
+        actual (list/set): The ground truth items (unique IDs).
+        predicted (list): The ranked list of predicted items (ordered by relevance).
+        k_list (list): The cut-off points (e.g., [5, 10, 20]).
+        
+    Returns:
+        dict: Recall values for each k.
+    """
+    actual_set = set(actual)
+    if not actual_set:
+        return {k: 0.0 for k in k_list}
+    
+    results = []
+    for k in k_list:
+        # Slice the top k predictions
+        top_k = list(predicted)[:k]
+        
+        # Count how many predicted items are in the actual set
+        hits = len(set(top_k) & actual_set)
+        
+        # Recall = (Relevant items retrieved) / (Total relevant items)
+        recall = hits / len(actual_set)
+        results.append(round(recall, 4)) 
+        
+    return results
+
+def calculate_mcc(tp, tn, fp, fn):
+    # Calculate the numerator
+    numerator = (tp * tn) - (fp * fn)
+    
+    # Calculate the denominator components
+    d1 = tp + fp
+    d2 = tp + fn
+    d3 = tn + fp
+    d4 = tn + fn
+    
+    # Check for zero denominator to avoid division errors
+    if 0 in (d1, d2, d3, d4):
+        return 0.0
+        
+    denominator = np.sqrt(d1 * d2 * d3 * d4)
+    return numerator / denominator
+
+def calculate_fixed_pool(q_id, retrieved_items, expected_ids, threshold=0.5):
+    expected_set = set(expected_ids)
+    
+    # Identify split point
+    split_idx = next((i for i, x in enumerate(retrieved_items) if x['score'] < threshold), len(retrieved_items))
+    
+    # Split the IDs into two sets
+    above_threshold_ids = {item['id'] for item in retrieved_items[:split_idx]}
+    below_threshold_ids = {item['id'] for item in retrieved_items[split_idx:]}
+    
+    # Use set math for counts
+    tp = len(above_threshold_ids & expected_set)
+    fp = len(above_threshold_ids - expected_set)
+    fn = len(below_threshold_ids & expected_set)
+    tn = len(below_threshold_ids - expected_set)
+
+    # Count IDs that were expected but never even appeared in the retrieval pool
+    retrieved_ids = {item['id'] for item in retrieved_items}
+    missing_from_pool = len(expected_set - retrieved_ids)
+    print(f"Missing from the pool: {missing_from_pool}")
+    fn += missing_from_pool
+
+    # Calcualte recall@k
+    #recall = calculate_recall_at_k(expected_ids, retrieved_ids, k_list)
+    # Calculate MCC
+    mcc = calculate_mcc(tp, tn, fp, fn)
+
+    specificity= tn / (tn + fp) if (tn + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    # result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
+    #         "recall": tp / (tp + fn) if (tp + fn) > 0 else 0, f"recall@{k_list[0]}": recall[0], f"recall@{k_list[1]}": recall[1], f"recall@{k_list[2]}": recall[2]}
+    result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity,
+            "recall": recall, "mcc": mcc, "balanced_accu": (specificity + recall)/2}
+
+    return result
+
+def my_search_function(q_id, info, method, request):
+    retrieved_items = []
+    if method == "LLMs":
+        docs, scores = combine_llm_scores(info['text'], request)
+
+        for i in range(len(scores)):
+            entry = {'id': docs[i].metadata["id"], 'score': scores[i]}
+            retrieved_items.append(entry)
+
+        return calculate_fixed_pool(q_id, retrieved_items, info['expected'], 0.5)
+    elif method == "CrossEncoder":
+        docs, scores = combine_advance_reranking(info['text'], request)
+
+        for i in range(len(scores)):
+            entry = {'id': docs[i].metadata["id"], 'score': scores[i]}
+            retrieved_items.append(entry)
+
+        return calculate_fixed_pool(q_id, retrieved_items, info['expected'], -0.1)        
+    else:
+        semantic_docs, _ = get_courses(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
+        keyword_docs, _ = get_courses_from_keywords(info['text'], request, num_retrieval=num_retrieval)
+        positive_semantic_docs, _ = get_courses_with_threshold(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
+        positive_keyword_docs, _ = get_courses_with_threshold_from_keywords(info['text'], request, num_retrieval=num_retrieval)
+
+        above_threshold_ids = set([doc.metadata["id"] for doc in positive_semantic_docs] + [doc.metadata["id"] for doc in positive_keyword_docs])
+        retrieved_ids = set([doc.metadata["id"] for doc in semantic_docs] + [doc.metadata["id"] for doc in keyword_docs])
+        below_threshold_ids = retrieved_ids - above_threshold_ids
+
+        tp = len(above_threshold_ids & info['expected'])
+        fp = len(above_threshold_ids - info['expected'])
+        fn = len(below_threshold_ids & info['expected'])
+        tn = len(below_threshold_ids - info['expected'])
+
+        # Count IDs that were expected but never even appeared in the retrieval pool
+        missing_from_pool = len(info['expected'] - retrieved_ids)
+        print(f"Missing from the pool: {missing_from_pool}")
+        fn += missing_from_pool
+
+        # Calculate recall@k
+        #recall = calculate_recall_at_k(info['expected'], retrieved_ids, k_list)
+        # Calculate MCC
+        mcc = calculate_mcc(tp, tn, fp, fn)
+
+        specificity= tn / (tn + fp) if (tn + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        # result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
+        #         "recall": tp / (tp + fn) if (tp + fn) > 0 else 0, f"recall@{k_list[0]}": recall[0], f"recall@{k_list[1]}": recall[1], f"recall@{k_list[2]}": recall[2]}
+        result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity,
+                "recall": recall, "mcc": mcc, "balanced_accu": (specificity + recall)/2}
+        return result
+
+
+@app.post("/evaluate", response_model=List)
+def evaluate_fixed_pool(method: str, request: Request):
+    mapping = load_eval_mapping('./gemini_generate_dataset_updateByHuman.jsonl')
+    results = []
+    
+    for q_id, info in mapping.items():
+        result = my_search_function(q_id, info, method, request) 
+        results.append(result)  
+
+    df_results = pd.DataFrame(results)
+
+    balanced_accu = df_results['balanced_accu'].mean()
+    balanced_accu_me = df_results['balanced_accu'].median()
+    mcc = df_results['mcc'].mean()
+    mcc_me = df_results['mcc'].median()
+    # precision = df_results['precision'].mean()
+    # precision_me = df_results['precision'].median()
+    # recall = df_results['recall'].mean()
+    # recall_me = df_results['recall'].median()
+    # recall_k1 = df_results[f"recall@{k_list[0]}"].mean()
+    # recall_k2 = df_results[f"recall@{k_list[1]}"].mean()
+    # recall_k3 = df_results[f"recall@{k_list[2]}"].mean()
+    # recall_k1_me = df_results[f"recall@{k_list[0]}"].median()
+    # recall_k2_me = df_results[f"recall@{k_list[1]}"].median()
+    # recall_k3_me = df_results[f"recall@{k_list[2]}"].median()
+    # print(f"Average Precision: {precision}")
+    # print(f"Average Recall: {recall}")
+    # print(f"Average F1: {2*precision*recall/(precision+recall) if (precision+recall)> 0 else 0}")
+    # print(f"Average recall@{k_list[0]}: {recall_k1}")
+    # print(f"Average recall@{k_list[1]}: {recall_k2}")
+    # print(f"Average recall@{k_list[2]}: {recall_k3}")
+    # print(f"Median F1: {2*precision_me*recall_me/(precision_me+recall_me) if (precision_me+recall_me)> 0 else 0}")
+    # print(f"Median recall@{k_list[0]}: {recall_k1_me}")
+    # print(f"Median recall@{k_list[1]}: {recall_k2_me}")
+    # print(f"Median recall@{k_list[2]}: {recall_k3_me}")
+    print(f"Average MCC: {mcc}")
+    print(f"Average Balanced Accuracy: {balanced_accu}")
+    print(f"Median MCC: {mcc_me}")
+    print(f"Median Balanced Accuracy: {balanced_accu_me}")
+
+    return results 

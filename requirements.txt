@@ -11,6 +11,7 @@ Rank-bm25
 nltk==3.9.2
 numpy==2.4.2
 einops
+pandas
 
 
 
