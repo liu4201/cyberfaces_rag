@@ -26,6 +26,7 @@ from dotenv import load_dotenv, find_dotenv
 import requests
 import logging
 from readerwriterlock import rwlock
+import copy
 
 class HealthCheckFilter(logging.Filter):
     def filter(self, record):
@@ -40,7 +41,7 @@ _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
 
-RELOAD_SIGNAL = os.environ.get('DATA_FILE_PATH', './data.jsonl').replace('data.jsonl', '.reload')
+RELOAD_SIGNAL = os.environ.get('DATA_FILE_PATH', './data.jsonl').replace('data.jsonl', '.reload') or os.environ.get('DATA_FILE2_PATH', './course_unit_map.jsonl')
 
 def reload_data_if_needed(app):
     """Check for .reload signal and hot-reload data."""
@@ -59,6 +60,7 @@ def reload_data_if_needed(app):
                 print(f"Warning: could not close old vectordb client: {e}")
     
             vectordb, docs = load_vectorDB_docs()
+            unit_course_map = load_module2course_data()
             bm25_obj, stemmer = load_keyword_docs(docs)
             docs_map = {str(doc.metadata["id"]): doc for doc in docs}
     
@@ -68,6 +70,7 @@ def reload_data_if_needed(app):
             app.state.bm25_obj = bm25_obj
             app.state.stemmer = stemmer
             app.state.docs_map = docs_map
+            app.state.unit_course_map = unit_course_map
 
         os.remove(RELOAD_SIGNAL)
         print("Hot-reload complete.")
@@ -93,11 +96,12 @@ async def lifespan(app: FastAPI):
 
     print("Loading Data...")
     vectordb, docs = load_vectorDB_docs()
+    unit_course_map = load_module2course_data()
     bm25_obj, stemmer = load_keyword_docs(docs)
     docs_map = {str(doc.metadata["id"]): doc for doc in docs} # to find the original doc with doc id
 
-    print("Loading Models...")
-    base_model, advance_model = load_rerankers()
+    #print("Loading Models...")
+    #base_model, advance_model = load_rerankers()
 
     # Store them in app.state
     app.state.vectordb = vectordb
@@ -105,8 +109,9 @@ async def lifespan(app: FastAPI):
     app.state.bm25_obj = bm25_obj
     app.state.stemmer = stemmer
     app.state.docs_map = docs_map
-    app.state.base_model = base_model
-    app.state.advance_model = advance_model
+    app.state.unit_course_map = unit_course_map
+    #app.state.base_model = base_model
+    #app.state.advance_model = advance_model
 
     watcher = threading.Thread(target=background_watcher, args=(app, 10), daemon=True)
     watcher.start()
@@ -272,6 +277,30 @@ async def healthz():
 #     metadata["is_course"] = record.get("is_course")
 
 #     return metadata
+def load_module2course_data():
+
+    file_path = os.environ.get('DATA_FILE2_PATH', './course_unit_map.jsonl')
+
+    unit_course_map = {}
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+                # Skip empty lines if any
+                if not line.strip():
+                    continue
+                    
+                original_data = json.loads(line.strip())
+                
+                # 2. Extract the IDs
+                unit_id = original_data.get("unit_id")
+                course_id = original_data.get("course_id")
+                
+                # 3. Add to dictionary (ensuring unit_id exists)
+                if unit_id is not None:
+                    unit_course_map[unit_id] = course_id
+
+
+    return unit_course_map
 
 def load_vectorDB_docs():
     # 1. Load each line of the jsonl file.
@@ -418,7 +447,7 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
     out_docs = top_docs
 
     for i in range(len(top_scores)):
-        if top_scores[i] <= 1.00:
+        if top_scores[i] <= 1.25:
             out_scores = top_scores[0:i]
             out_docs = top_docs[0:i]
             break
@@ -490,7 +519,7 @@ def manual_rrf(semantic_docs, keyword_docs, docs_map, k=60):
     print("RRF:")
     print(scores)
 
-    return output_docs
+    return output_docs, scores
 
 @timer_decorator
 def combine_manual_rrf(question, request):    
@@ -503,144 +532,42 @@ def search_from_all_courses(question: str, request: Request):
     # Acquire the READ lock
     # Multiple threads can enter this 'gen_rlock' block at the same time.
     with app.state.reload_rwlock.gen_rlock():
-        return combine_manual_rrf(question, request)
-
-#========================== Reranking =====================================
-
-def load_rerankers():
-    #Base model
-    base_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-    print(f"MiniLM Device: {base_model.model.device}")
-
-    # Advanced model
-    #model_name = 'Qwen/Qwen3-Reranker-0.6B'
-    # model_name = 'zeroentropy/zerank-2'
-    
-    # # 1. Manually load and fix the tokenizer first
-    # tokenizer = AutoTokenizer.from_pretrained(model_name)
-    # if tokenizer.pad_token is None:
-    #     tokenizer.pad_token = tokenizer.eos_token
-    
-    # # 2. Pass the fixed tokenizer into the CrossEncoder
-    # rerank_model_advance = CrossEncoder(
-    #     model_name, 
-    #     max_length=512, 
-    #     tokenizer_args={'pad_token': tokenizer.pad_token},
-    #     trust_remote_code=True
-    # )
-    # # 3. Explicitly set it on the underlying model just to be safe
-    # rerank_model_advance.model.config.pad_token_id = tokenizer.pad_token_id
-
-    # rerank_model_advance = CrossEncoder(
-    #     'jinaai/jina-reranker-v2-base-multilingual',
-    #     trust_remote_code=True,
-    #     automodel_args={"torch_dtype": "float32"})
-
-    from transformers import AutoModel
-    
-    rerank_model_advance = AutoModel.from_pretrained(
-        'jinaai/jina-reranker-v3',
-        dtype="auto",
-        trust_remote_code=True
-    )
-    rerank_model_advance.eval()
-
-    #print(f"Advanced rerank Device: {rerank_model_advance.model.device}")
-    #print(f"Advanced rerank structure: {rerank_model_advance.model}")
-
-    return base_model, rerank_model_advance
+        docs, scores = combine_manual_rrf(question, request)
+        return docs
 
 @timer_decorator
-def combine_reranking(question, request):    
-    semantic_docs, _ = get_courses(question, request.app.state.vectordb, num_retrieval=num_retrieval)
-    keyword_docs, _ = get_courses_from_keywords(question, request, num_retrieval=num_retrieval)
+def add_unit_parent(courses, scores, request): 
+    current_course_ids = set([course.metadata["id"] for course in courses])
+    out_courses = copy.deepcopy(courses)
+    out_scores = copy.deepcopy(scores)
 
-    # below only take the unique docs (remove duplicates btw semantic search and keyword search)
-    seen = set()
-    combined_docs = semantic_docs 
+    for i in range(len(scores)):
+        unit_id = courses[i].metadata["id"]
+        parent_id = request.app.state.unit_course_map.get(unit_id)
+        if parent_id not in current_course_ids and parent_id is not None:
+            out_courses.append(request.app.state.docs_map[str(parent_id)])
+            out_scores.append(scores[i])
 
-    for doc in semantic_docs:
-        seen.add(doc.metadata["id"])
+    # sort
+    sorted_pairs = sorted(zip(out_scores, out_courses), key=lambda x: x[0], reverse=True)
+    sorted_list_score, sorted_list_course = zip(*sorted_pairs)
+    sorted_list_score = list(sorted_list_score)
+    sorted_list_course = list(sorted_list_course)    
+    return sorted_list_course, sorted_list_score
 
-    for doc in keyword_docs:
-        if doc.metadata["id"] not in seen:
-            combined_docs.append(doc)
-    
-    #question = rewrite_query_with_llm(question)
-    #print(question)
 
-    pairs = [[question, doc.page_content] for doc in combined_docs]
-
-    scores = request.app.state.base_model.predict(pairs)
-
-    ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True) 
-
-    output_docs= [result[1] for result in ranked_results] #if result[0]> -0.3
-
-    output_scores = [result[0] for result in ranked_results] # if result[0]> -0.3
-    print("Base Reranking:")
-    print(output_scores)
-
-    return output_docs 
-
-@app.post("/search_reranking_base", response_model=List)
-def rerank_from_all_courses(question: str, request: Request):
-    #question = rewrite_query_with_llm(question)
-    #print(question)
+@app.post("/search_RRF_unit2course", response_model=List)
+# this endpoint incorporate the logic to automatically include parental course if module is a match
+def search_from_all_courses_unit2course(question: str, request: Request):
     # Acquire the READ lock
     # Multiple threads can enter this 'gen_rlock' block at the same time.
     with app.state.reload_rwlock.gen_rlock():
-        return combine_reranking(question, request)  
+        courses, scores = combine_manual_rrf(question, request)
+        sorted_list_course, sorted_list_score = add_unit_parent(courses, scores, request)
+        return sorted_list_course
 
+#========================== Reranking =====================================
 
-@timer_decorator
-def combine_advance_reranking(question, request):    
-    semantic_docs, _ = get_courses(question, request.app.state.vectordb, num_retrieval=num_retrieval)
-    keyword_docs, _ = get_courses_from_keywords(question, request, num_retrieval=num_retrieval)
-
-    # below only take the unique docs (remove duplicates btw semantic search and keyword search)
-    seen = set()
-    combined_docs = semantic_docs 
-
-    for doc in semantic_docs:
-        seen.add(doc.metadata["id"])
-
-    for doc in keyword_docs:
-        if doc.metadata["id"] not in seen:
-            combined_docs.append(doc)
-
-    question = rewrite_query_with_llm(question)
-    print(question)
-    instruction = "Given a course description, identify all documents that provide relevant information, even if they use different terminology or they are sub-topics. "
-    #instruction = "Given a search query, find documents that are broadly relevant to the topic, including synonyms and related concepts."
-    # 2. Prepend the instruction to the query with a newline
-    query_with_instruction = f"instruction: {instruction}\nquery: {question}"
-
-    # pairs = [[query_with_instruction, doc.page_content] for doc in combined_docs]
-    # #pairs = [[question, doc.page_content] for doc in combined_docs]
-
-    # scores = app.state.advance_model.predict(pairs)
-
-    # ranked_results = sorted(zip(scores, combined_docs), key=lambda x: x[0], reverse=True)
-
-    # output_docs= [result[1] for result in ranked_results]
-
-    # output_scores = [result[0] for result in ranked_results]
-
-    docs= [doc.page_content for doc in combined_docs]
-    ranked_results = app.state.advance_model.rerank(
-        query=query_with_instruction, 
-        documents=docs
-    )
-
-    output_docs= [result['document'] for result in ranked_results]
-
-    output_scores = [result['relevance_score'] for result in ranked_results]
-
-    print("Advanced Reranking:")
-    print(output_scores)
-
-    return output_docs 
 
 @timer_decorator
 def combine_llm_scores(question, request):    
@@ -661,17 +588,6 @@ def combine_llm_scores(question, request):
     doc_list = [doc.page_content for doc in combined_docs]
     print(doc_list)
     return score_with_llm(doc_list, question)
-
-
-
-@app.post("/search_reranking_advance", response_model=List)
-def rerank_advance_from_all_courses(question: str, request: Request):
-    #question = rewrite_query_with_llm(question)
-    #print(question)
-    # Acquire the READ lock
-    # Multiple threads can enter this 'gen_rlock' block at the same time.
-    with app.state.reload_rwlock.gen_rlock():
-        return combine_advance_reranking(question, request) 
   
 @app.post("/search_llm_scores", response_model=List)
 def rerank_llm_scores(question: str, request: Request):

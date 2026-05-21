@@ -16,8 +16,8 @@ WORKDIR /app
 
 # Copy only requirements first for better layer caching
 COPY requirements.txt .
-#COPY data.jsonl .
-
+COPY data.jsonl .
+COPY course_unit_map.jsonl .
 # Install dependencies (this layer will be cached unless requirements.txt changes)
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt

@@ -6,7 +6,7 @@
 set -e  # Exit on error
 
 # Configuration
-IMAGE_NAME="cyberfaces-rag"
+IMAGE_NAME="cyberfaces-rag-deploy"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 REGISTRY="${REGISTRY:-}"  # Set this to your container registry (e.g., docker.io/username, gcr.io/project-id)
 REGISTRY="registry.anvil.rcac.purdue.edu/cyberfaces"
