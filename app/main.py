@@ -26,6 +26,7 @@ from dotenv import load_dotenv, find_dotenv
 import requests
 import logging
 import pandas as pd
+import copy
 
 class HealthCheckFilter(logging.Filter):
     def filter(self, record):
@@ -37,13 +38,13 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 num_retrieval=24
 k_list = [5, 10, 20]
-keyword_threshold = 0.8 #1.00
+keyword_threshold = 1.25 #1.00
 
 _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
 
-RELOAD_SIGNAL = os.environ.get('DATA_FILE_PATH', './data.jsonl').replace('data.jsonl', '.reload')
+RELOAD_SIGNAL = os.environ.get('DATA_FILE_PATH', './data.jsonl').replace('data.jsonl', '.reload') or os.environ.get('DATA_FILE2_PATH', './course_unit_map.jsonl')
 
 def reload_data_if_needed(app):
     """Check for .reload signal and hot-reload data."""
@@ -61,6 +62,7 @@ def reload_data_if_needed(app):
             print(f"Warning: could not close old vectordb client: {e}")
 
         vectordb, docs = load_vectorDB_docs()
+        unit_course_map = load_module2course_data()
         bm25_obj, stemmer = load_keyword_docs(docs)
         docs_map = {str(doc.metadata["id"]): doc for doc in docs}
 
@@ -70,6 +72,7 @@ def reload_data_if_needed(app):
         app.state.bm25_obj = bm25_obj
         app.state.stemmer = stemmer
         app.state.docs_map = docs_map
+        app.state.unit_course_map = unit_course_map
 
         os.remove(RELOAD_SIGNAL)
         print("Hot-reload complete.")
@@ -92,6 +95,7 @@ async def lifespan(app: FastAPI):
 
     print("Loading Data...")
     vectordb, docs = load_vectorDB_docs()
+    unit_course_map = load_module2course_data()
     bm25_obj, stemmer = load_keyword_docs(docs)
     docs_map = {str(doc.metadata["id"]): doc for doc in docs} # to find the original doc with doc id
 
@@ -106,6 +110,7 @@ async def lifespan(app: FastAPI):
     app.state.docs_map = docs_map
     app.state.base_model = base_model
     app.state.advance_model = advance_model
+    app.state.unit_course_map = unit_course_map
 
     watcher = threading.Thread(target=background_watcher, args=(app, 10), daemon=True)
     watcher.start()
@@ -288,6 +293,31 @@ async def healthz():
 
 #     return metadata
 
+def load_module2course_data():
+
+    file_path = os.environ.get('DATA_FILE2_PATH', './course_unit_map.jsonl')
+
+    unit_course_map = {}
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+                # Skip empty lines if any
+                if not line.strip():
+                    continue
+                    
+                original_data = json.loads(line.strip())
+                
+                # 2. Extract the IDs
+                unit_id = original_data.get("unit_id")
+                course_id = original_data.get("course_id")
+                
+                # 3. Add to dictionary (ensuring unit_id exists)
+                if unit_id is not None:
+                    unit_course_map[unit_id] = course_id
+
+
+    return unit_course_map
+
 def load_vectorDB_docs():
     # 1. Load each line of the jsonl file.
     
@@ -455,7 +485,7 @@ def get_courses_with_threshold_from_keywords(query, request, num_retrieval=num_r
     for i in range(len(top_scores)):
         if top_scores[i] <= keyword_threshold:
             out_scores = top_scores[0:i]
-            out_docs = top_docs[0:i]
+            out_docs = out_docs[0:i]
             break
 
 
@@ -544,6 +574,45 @@ def combine_all_manual_rrf(question, request):
 def search_from_all_courses_all_candidates(question: str, request: Request):
     docs, scores = combine_all_manual_rrf(question, request)
     return docs
+
+@timer_decorator
+def add_unit_parent(courses, scores, request): 
+    # current_course = set([course.metadata["id"] for course in courses])
+    # parent_course = set()
+    # for c in current_course:
+    #     parent_course.add(request.app.state.unit_course_map.get(c))
+    # full_course = current_course | parent_course
+    # full_course.discard(None)
+    # full_course = list(full_course)
+
+    # full_course_with_content = [request.app.state.docs_map[str(doc_id)] for doc_id in full_course]
+
+    # return full_course_with_content
+    current_course_ids = set([course.metadata["id"] for course in courses])
+    out_courses = copy.deepcopy(courses)
+    out_scores = copy.deepcopy(scores)
+
+    for i in range(len(scores)):
+        unit_id = courses[i].metadata["id"]
+        parent_id = request.app.state.unit_course_map.get(unit_id)
+        if parent_id not in current_course_ids and parent_id is not None:
+            out_courses.append(request.app.state.docs_map[str(parent_id)])
+            out_scores.append(scores[i])
+
+    # sort
+    sorted_pairs = sorted(zip(out_scores, out_courses), key=lambda x: x[0], reverse=True)
+    sorted_list_score, sorted_list_course = zip(*sorted_pairs)
+    sorted_list_score = list(sorted_list_score)
+    sorted_list_course = list(sorted_list_course)    
+    return sorted_list_course, sorted_list_score
+
+
+@app.post("/search_RRF_unit2course", response_model=List)
+# this endpoint incorporate the logic to automatically include parental course if module is a match
+def search_from_all_courses_unit2course(question: str, request: Request):
+    courses, scores = combine_manual_rrf(question, request)
+    sorted_list_course, sorted_list_score = add_unit_parent(courses, scores, request)
+    return sorted_list_course
 #========================== Reranking =====================================
 
 def load_rerankers():
@@ -746,7 +815,7 @@ def combine_llm_scores(question, request):
     correct_doc_scores = doc_scores[:len(doc_list)]
     top_n_indices = np.argsort(correct_doc_scores)[::-1]
     # print(top_n_indices)
-    print(len(correct_doc_scores))
+    print(len(doc_scores))
     print(len(combined_docs))
 
     # print(doc_list[41])
@@ -806,6 +875,24 @@ def load_eval_mapping(filepath):
             query_map[data['query_id']] = {
                 "text": data['user_query'],
                 "expected": set(data['expected_ids'])
+            }
+    return query_map
+
+def load_eval_mapping_unit2course(filepath, request):
+    query_map = {}
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            data = json.loads(line)
+            # Map query_id -> {text, expected_ids}
+
+            parent_course = set()
+            for c in data['expected_ids']:
+                parent_course.add(request.app.state.unit_course_map.get(c)) 
+            parent_course.discard(None)
+    
+            query_map[data['query_id']] = {
+                "text": data['user_query'],
+                "expected": set(data['expected_ids']) | parent_course
             }
     return query_map
 
@@ -910,12 +997,12 @@ def my_search_function(q_id, info, method, request):
             retrieved_items.append(entry)
 
         return calculate_fixed_pool(q_id, retrieved_items, info['expected'], -0.1)        
-    else:
+    elif method == "RRF":
         semantic_docs, _ = get_courses(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
         keyword_docs, _ = get_courses_from_keywords(info['text'], request, num_retrieval=num_retrieval)
         positive_semantic_docs, _ = get_courses_with_threshold(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
         positive_keyword_docs, _ = get_courses_with_threshold_from_keywords(info['text'], request, num_retrieval=num_retrieval)
-
+        
         above_threshold_ids = set([doc.metadata["id"] for doc in positive_semantic_docs] + [doc.metadata["id"] for doc in positive_keyword_docs])
         retrieved_ids = set([doc.metadata["id"] for doc in semantic_docs] + [doc.metadata["id"] for doc in keyword_docs])
         below_threshold_ids = retrieved_ids - above_threshold_ids
@@ -942,11 +1029,72 @@ def my_search_function(q_id, info, method, request):
         result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity,
                 "recall": recall, "mcc": mcc, "balanced_accu": (specificity + recall)/2}
         return result
+    elif method == "LLMs_unit2course":
+        docs, scores = combine_llm_scores(info['text'], request)
+        docs, scores = add_unit_parent(docs, scores, request)
 
+        for i in range(len(scores)):
+            entry = {'id': docs[i].metadata["id"], 'score': scores[i]}
+            retrieved_items.append(entry)
+
+        return calculate_fixed_pool(q_id, retrieved_items, info['expected'], 0.5)
+    elif method == "CrossEncoder_unit2course":
+        docs, scores = combine_advance_reranking(info['text'], request)
+        docs, scores = add_unit_parent(docs, scores, request)
+
+        for i in range(len(scores)):
+            entry = {'id': docs[i].metadata["id"], 'score': scores[i]}
+            retrieved_items.append(entry)
+
+        return calculate_fixed_pool(q_id, retrieved_items, info['expected'], -0.1)        
+    elif method == "RRF_unit2course":
+        semantic_docs, _ = get_courses(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
+        keyword_docs, _ = get_courses_from_keywords(info['text'], request, num_retrieval=num_retrieval)
+        positive_semantic_docs, _ = get_courses_with_threshold(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
+        positive_keyword_docs, _ = get_courses_with_threshold_from_keywords(info['text'], request, num_retrieval=num_retrieval)
+        
+        above_threshold_ids = set([doc.metadata["id"] for doc in positive_semantic_docs] + [doc.metadata["id"] for doc in positive_keyword_docs])
+        parent_course = set()
+        for c in above_threshold_ids:
+            parent_course.add(request.app.state.unit_course_map.get(c)) 
+        parent_course.discard(None)
+
+        above_threshold_ids = above_threshold_ids | parent_course
+
+        retrieved_ids = set([doc.metadata["id"] for doc in semantic_docs] + [doc.metadata["id"] for doc in keyword_docs])
+        retrieved_ids = retrieved_ids | parent_course
+
+        below_threshold_ids = retrieved_ids - above_threshold_ids
+
+        tp = len(above_threshold_ids & info['expected'])
+        fp = len(above_threshold_ids - info['expected'])
+        fn = len(below_threshold_ids & info['expected'])
+        tn = len(below_threshold_ids - info['expected'])
+
+        # Count IDs that were expected but never even appeared in the retrieval pool
+        missing_from_pool = len(info['expected'] - retrieved_ids)
+        print(f"Missing from the pool: {missing_from_pool}")
+        fn += missing_from_pool
+
+        # Calculate recall@k
+        #recall = calculate_recall_at_k(info['expected'], retrieved_ids, k_list)
+        # Calculate MCC
+        mcc = calculate_mcc(tp, tn, fp, fn)
+
+        specificity= tn / (tn + fp) if (tn + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        # result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
+        #         "recall": tp / (tp + fn) if (tp + fn) > 0 else 0, f"recall@{k_list[0]}": recall[0], f"recall@{k_list[1]}": recall[1], f"recall@{k_list[2]}": recall[2]}
+        result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity,
+                "recall": recall, "mcc": mcc, "balanced_accu": (specificity + recall)/2}
+        return result
 
 @app.post("/evaluate", response_model=List)
 def evaluate_fixed_pool(method: str, request: Request):
-    mapping = load_eval_mapping('./gemini_generate_dataset_updateByHuman.jsonl')
+    if method.endswith("unit2course"):
+        mapping = load_eval_mapping_unit2course('./gemini_generate_dataset_updateByHuman.jsonl', request)
+    else:
+        mapping = load_eval_mapping('./gemini_generate_dataset_updateByHuman.jsonl')
     results = []
     
     for q_id, info in mapping.items():

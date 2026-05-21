@@ -17,6 +17,7 @@ WORKDIR /app
 # Copy only requirements first for better layer caching
 COPY requirements.txt .
 COPY data.jsonl .
+COPY course_unit_map.jsonl .
 COPY gemini_generate_dataset_updateByHuman.jsonl .
 
 # Install dependencies (this layer will be cached unless requirements.txt changes)
