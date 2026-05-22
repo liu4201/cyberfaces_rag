@@ -11,6 +11,7 @@ It employs a two-stage retrieval architecture. The initial fast-retrieval stage 
 ├── app/                    # API script
 ├── data.jsonl              # course description from CyberFaCES database
 ├── ...
+├── gemini_generate_dataset_updateByHuman.jsonl # a test dataset comprising 35 queries and their corresponding ground-truth courses
 └── course_unit_map.jsonl   # the mapping for unit_to_course logic from CyberFaCES database
 
 # Getting Started 
@@ -66,6 +67,18 @@ Now, open your browser and go to `http://localhost:8000/docs` to get started.
 - `POST /evaluate`
     - Description: evaluation with a test dataset comprising 35 queries and their corresponding ground-truth courses: `gemini_generate_dataset_updateByHuman.jsonl`
     - Parameter: 
+        - "RRF"
+            - evaluating conditional RRF reranker
+        - "CrossEncoder"
+            - evaluating advanced cross-encoder `jina-reranker-v3`
+        - "LLMs"
+            - evaluating LLM reranker
+        - "RRF_unit2course"
+            - evaluating conditional RRF reranker with "unit_to_course" logic
+        - "CrossEncoder_unit2course"
+            - evaluating advanced CrossEncoder reranker with "unit_to_course" logic
+        - "LLMs_unit2course"
+            - evaluating the LLM reranker with "unit_to_course" logic
 
 ## Run endpoints
 
