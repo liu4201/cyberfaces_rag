@@ -6,6 +6,7 @@ It employs a two-stage retrieval architecture. The initial fast-retrieval stage 
 
 # Directory Layout
 
+```text
 ├── analysis/               # Evaluation of different re-rankers 
 ├── prompts/                # Query Expansion Prompts & Cross Encoder Instructions
 ├── app/                    # API script
@@ -13,6 +14,7 @@ It employs a two-stage retrieval architecture. The initial fast-retrieval stage 
 ├── ...
 ├── gemini_generate_dataset_updateByHuman.jsonl # a test dataset comprising 35 queries and their corresponding ground-truth courses
 └── course_unit_map.jsonl   # the mapping for unit_to_course logic from CyberFaCES database
+```
 
 # Getting Started 
 
