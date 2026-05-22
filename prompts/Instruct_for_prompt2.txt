@@ -1,0 +1,2 @@
+Instruction= “Given a detailed academic landscape description, find the specific course that best fits as a core component or a specialized sub-discipline within this educational path.”
+

@@ -1,0 +1,4 @@
+Instruction 1 = "Given a search query, find relevant documents that answer the query.”
+Instruction 2 = "Given a search query, find documents that are broadly relevant to the topic, including synonyms and related concepts.”
+Instruction 3 =“Given a search query, identify all documents that provide relevant information, even if they use different terminology or they are sub-topics.”
+

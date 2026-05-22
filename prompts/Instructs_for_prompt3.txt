@@ -1,0 +1,4 @@
+Instruction 1 = "Given a course description, find documents that are broadly relevant, including synonyms and related concepts.”
+Instruction 2 =“Given a course description, identify all documents that provide relevant information, even if they use different terminology or they are sub-topics.” (Scenario 3)
+Instruction 3= Given a course description, evaluate if the Document is broadly relevant to the Query. Rate the relevance on a scale from 0 to 1 based on these criteria: 0 to 0.5: Completely irrelevant or off-topic. 0.51 to 0.8: Relevant; provides useful information that partially answers the query. 0.81 to 1: Highly relevant; directly and comprehensively answers the query. 
+Instruction 4= Given a course description, evaluate if the Document is broadly relevant.
