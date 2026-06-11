@@ -10,11 +10,31 @@ IMAGE_NAME="cyberfaces-rag-deploy"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD)}"
 REGISTRY="${REGISTRY:-}"  # Set this to your container registry (e.g., docker.io/username, gcr.io/project-id)
 REGISTRY="registry.anvil.rcac.purdue.edu/cyberfaces"
-NAMESPACE="cyberfaces-dev"
-K8S_MANIFEST="k8s-deployment.yaml"
 CRONJOB_IMAGE_NAME="cyberfaces-rag-data-sync"
 CRONJOB_IMAGE_TAG="latest"
-CRONJOB_MANIFEST="k8s-cronjob.yaml"
+
+# Target environment: dev (default) or prod.
+#   ENV=prod ./deploy.sh           → deploy to cyberfaces-cms namespace using *-prod.yaml manifests
+#   SKIP_BUILD=1 ./deploy.sh       → reuse the already-pushed image (no docker build/push)
+ENV="${ENV:-dev}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
+
+case "${ENV}" in
+    dev)
+        NAMESPACE="cyberfaces-dev"
+        K8S_MANIFEST="k8s-deployment.yaml"
+        CRONJOB_MANIFEST="k8s-cronjob.yaml"
+        ;;
+    prod)
+        NAMESPACE="cyberfaces-cms"
+        K8S_MANIFEST="k8s-deployment-prod.yaml"
+        CRONJOB_MANIFEST="k8s-cronjob-prod.yaml"
+        ;;
+    *)
+        echo "ERROR: ENV must be 'dev' or 'prod' (got: ${ENV})" >&2
+        exit 1
+        ;;
+esac
 
 # Colors for output
 RED='\033[0;31m'
@@ -47,34 +67,39 @@ FULL_IMAGE_NAME="${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
 
 FULL_CRONJOB_IMAGE_NAME="${REGISTRY}/${CRONJOB_IMAGE_NAME}:${CRONJOB_IMAGE_TAG}"
 
-print_info "Starting build, push, and deploy process..."
+print_info "Target environment: ${ENV} (namespace: ${NAMESPACE})"
 print_info "App image:     ${FULL_IMAGE_NAME}"
 print_info "CronJob image: ${FULL_CRONJOB_IMAGE_NAME}"
-
-# Step 1: Build the CronJob Docker image
-print_info "Building CronJob image (linux/amd64)..."
-
-if ! docker buildx inspect multiplatform-builder > /dev/null 2>&1; then
-    print_info "Creating buildx builder instance..."
-    docker buildx create --name multiplatform-builder --use
-    docker buildx inspect --bootstrap
-else
-    print_info "Using existing buildx builder..."
-    docker buildx use multiplatform-builder
+if [ "${SKIP_BUILD}" = "1" ]; then
+    print_info "SKIP_BUILD=1 — skipping docker build/push, deploying with existing images."
 fi
 
-docker buildx build \
-    --platform linux/amd64 \
-    -f Dockerfile.cronjob \
-    -t "${FULL_CRONJOB_IMAGE_NAME}" \
-    --push \
-    .
+if [ "${SKIP_BUILD}" != "1" ]; then
+    # Step 1: Build the CronJob Docker image
+    print_info "Building CronJob image (linux/amd64)..."
 
-if [ $? -eq 0 ]; then
-    print_info "CronJob image built and pushed successfully!"
-else
-    print_error "CronJob image build/push failed!"
-    exit 1
+    if ! docker buildx inspect multiplatform-builder > /dev/null 2>&1; then
+        print_info "Creating buildx builder instance..."
+        docker buildx create --name multiplatform-builder --use
+        docker buildx inspect --bootstrap
+    else
+        print_info "Using existing buildx builder..."
+        docker buildx use multiplatform-builder
+    fi
+
+    docker buildx build \
+        --platform linux/amd64 \
+        -f Dockerfile.cronjob \
+        -t "${FULL_CRONJOB_IMAGE_NAME}" \
+        --push \
+        .
+
+    if [ $? -eq 0 ]; then
+        print_info "CronJob image built and pushed successfully!"
+    else
+        print_error "CronJob image build/push failed!"
+        exit 1
+    fi
 fi
 
 # Update CronJob manifest
@@ -90,23 +115,25 @@ else
     exit 1
 fi
 
-# Step 3: Build the app Docker image for linux/amd64
-print_info "Building app Docker image (linux/amd64)..."
+if [ "${SKIP_BUILD}" != "1" ]; then
+    # Step 3: Build the app Docker image for linux/amd64
+    print_info "Building app Docker image (linux/amd64)..."
 
-# Build and push the image
-docker buildx build \
-    --platform linux/amd64 \
-    -t "${FULL_IMAGE_NAME}" \
-    --cache-from type=registry,ref="${REGISTRY}/${IMAGE_NAME}:cache" \
-    --cache-to   type=registry,ref="${REGISTRY}/${IMAGE_NAME}:cache",mode=max \
-    --push \
-    .
+    # Build and push the image
+    docker buildx build \
+        --platform linux/amd64 \
+        -t "${FULL_IMAGE_NAME}" \
+        --cache-from type=registry,ref="${REGISTRY}/${IMAGE_NAME}:cache" \
+        --cache-to   type=registry,ref="${REGISTRY}/${IMAGE_NAME}:cache",mode=max \
+        --push \
+        .
 
-if [ $? -eq 0 ]; then
-    print_info "Docker image built and pushed successfully!"
-else
-    print_error "Docker build/push failed!"
-    exit 1
+    if [ $? -eq 0 ]; then
+        print_info "Docker image built and pushed successfully!"
+    else
+        print_error "Docker build/push failed!"
+        exit 1
+    fi
 fi
 
 # Step 4: Update the Kubernetes manifest with the correct image
@@ -123,7 +150,11 @@ fi
 
 # Step 5: Deploy to Kubernetes
 print_info "Deploying CronJob to Kubernetes (namespace: ${NAMESPACE})..."
-kubectl --context=anvil apply -f "${CRONJOB_MANIFEST}" -n "${NAMESPACE}"
+# Server-side apply: client-side apply strips fields it doesn't manage (e.g. the
+# admission-webhook-injected `created-by` label), which desyncs the Deployment
+# pod-template hash from the created ReplicaSet and triggers a hash-collision
+# storm. --force-conflicts takes over fields previously owned by client-side apply.
+kubectl --context=anvil apply --server-side --force-conflicts -f "${CRONJOB_MANIFEST}" -n "${NAMESPACE}"
 
 if [ $? -eq 0 ]; then
     print_info "CronJob deployment successful!"
@@ -140,7 +171,7 @@ kubectl --context=anvil create job \
     -n "${NAMESPACE}" 2>/dev/null || print_warn "Init job already exists, skipping."
 
 print_info "Deploying app to Kubernetes (namespace: ${NAMESPACE})..."
-kubectl --context=anvil apply -f "${K8S_MANIFEST}" -n "${NAMESPACE}"
+kubectl --context=anvil apply --server-side --force-conflicts -f "${K8S_MANIFEST}" -n "${NAMESPACE}"
 
 if [ $? -eq 0 ]; then
     print_info "Deployment successful!"
