@@ -41,7 +41,13 @@ _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
 
 
-RELOAD_SIGNAL = os.environ.get('DATA_FILE_PATH', './data.jsonl').replace('data.jsonl', '.reload') or os.environ.get('DATA_FILE2_PATH', './course_unit_map.jsonl')
+# The CronJob writes the reload signal next to the synced data files
+# (e.g. /data/current/.reload). Derive it from DATA_FILE_PATH's directory so
+# it always matches sync-data.sh regardless of the data file name.
+RELOAD_SIGNAL = os.path.join(
+    os.path.dirname(os.environ.get('DATA_FILE_PATH', './data.jsonl')),
+    '.reload',
+)
 
 def reload_data_if_needed(app):
     """Check for .reload signal and hot-reload data."""
