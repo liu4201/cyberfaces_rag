@@ -22,18 +22,23 @@ metadata:
     app: cyberfaces-rag
 spec:
   schedule: "0 * * * *"
-  concurrencyPolicy: Forbid
+  # Replace a still-running (e.g. stuck) job at the next tick instead of
+  # blocking it, and skip a tick that cannot start within 2 min.
+  concurrencyPolicy: Replace
+  startingDeadlineSeconds: 120
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      # Fail a run that hangs (e.g. stuck on a bad node's volume mount) after
+      # 5 min so it frees the slot instead of hanging forever; retry up to 3x.
+      activeDeadlineSeconds: 300
+      backoffLimit: 3
       template:
         spec:
-          tolerations:
-          - key: hub.jupyter.org/dedicated
-            operator: Equal
-            value: gpu
-            effect: NoSchedule
+          # No GPU toleration: data-sync needs no GPU, so keep it off the
+          # GPU-tainted nodes (one of which has a broken cephfs CSI mount that
+          # leaves the pod stuck in ContainerCreating) and run on regular nodes.
           restartPolicy: OnFailure
           containers:
           - name: data-sync
