@@ -3,3 +3,7 @@
 chromaDB/
 *.sqlite3
 *.bin
+# Local secret-creation scripts (contain plaintext credentials, never commit)
+create-secret.sh
+create_secret.sh
+.DS_Store
