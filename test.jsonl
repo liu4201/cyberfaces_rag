@@ -1,0 +1,17 @@
+{"query_id": "eval_01", "user_query": "Docker", "expected_ids": [68, 78, 97, 311]}
+{"query_id": "eval_02", "user_query": "HPC", "expected_ids": [217, 245, 248, 311]}
+{"query_id": "eval_03", "user_query": "cloud computing", "expected_ids": [287, 289, 311]}
+{"query_id": "eval_04", "user_query": "metadata", "expected_ids": [89, 138, 139]}
+{"query_id": "eval_05", "user_query": "computer vision", "expected_ids": [271]}
+{"query_id": "eval_06", "user_query": "R", "expected_ids": [66, 67, 75, 76, 91, 92, 95]}
+{"query_id": "eval_07", "user_query": "data structure and algorithms", "expected_ids": [145, 164, 166]}
+{"query_id": "eval_08", "user_query": "programming", "expected_ids": [66, 67, 75, 76, 91, 92, 95, 125, 128, 132, 136, 146, 163, 178, 190, 191, 192, 193, 194, 210, 260, 260]}
+{"query_id": "eval_09", "user_query": "baseflow", "expected_ids": [105]}
+{"query_id": "eval_10", "user_query": "ecology", "expected_ids": [207, 212, 213, 214, 215, 226]}
+{"query_id": "eval_11", "user_query": "PURR", "expected_ids": [70, 98, 99]}
+{"query_id": "eval_12", "user_query": "data visualization", "expected_ids": [4, 114, 117, 118, 119, 143, 168, 190, 193, 235, 277, 288]}
+{"query_id": "eval_13", "user_query": "python for hydrology", "expected_ids": [2, 3, 4, 15, 113, 191, 193, 219, 210, 241, 263, 266, 274, 291, 295, 338]}
+{"query_id": "eval_14", "user_query": "python for geospatial science", "expected_ids": [2, 3, 4, 15, 113, 190, 191, 193, 219, 210, 241, 263, 266, 274, 291, 295, 338]}
+{"query_id": "eval_15", "user_query": "streamflow", "expected_ids": [10, 106, 115, 116, 126, 172, 173, 174, 175, 176, 177, 192, 226]}
+{"query_id": "eval_16", "user_query": "operating system", "expected_ids": [63, 74, 80, 82, 83]}
+{"query_id": "eval_17", "user_query": "OS", "expected_ids": [63, 74, 80, 82, 83]}

@@ -19,6 +19,7 @@ COPY requirements.txt .
 COPY data.jsonl .
 COPY course_unit_map.jsonl .
 COPY gemini_generate_dataset_updateByHuman.jsonl .
+COPY test.jsonl .
 
 # Install dependencies (this layer will be cached unless requirements.txt changes)
 RUN --mount=type=cache,target=/root/.cache/pip \

@@ -35,10 +35,12 @@ class HealthCheckFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 #==========================Semantic Engine=================================
-
+# set parameters here
 num_retrieval=24
 k_list = [5, 10, 20]
 keyword_threshold = 1.25 #1.00
+test_mode = False #True
+#-------------------------------------------------------
 
 _ = load_dotenv(find_dotenv()) # read local .env file
 api_key  = os.environ['ANVILGPT_API']
@@ -974,7 +976,7 @@ def calculate_fixed_pool(q_id, retrieved_items, expected_ids, threshold=0.5):
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0
     # result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
     #         "recall": tp / (tp + fn) if (tp + fn) > 0 else 0, f"recall@{k_list[0]}": recall[0], f"recall@{k_list[1]}": recall[1], f"recall@{k_list[2]}": recall[2]}
-    result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity,
+    result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
             "recall": recall, "mcc": mcc, "balanced_accu": (specificity + recall)/2}
 
     return result
@@ -1026,7 +1028,7 @@ def my_search_function(q_id, info, method, request):
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0
         # result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
         #         "recall": tp / (tp + fn) if (tp + fn) > 0 else 0, f"recall@{k_list[0]}": recall[0], f"recall@{k_list[1]}": recall[1], f"recall@{k_list[2]}": recall[2]}
-        result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity,
+        result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
                 "recall": recall, "mcc": mcc, "balanced_accu": (specificity + recall)/2}
         return result
     elif method == "LLMs_unit2course":
@@ -1085,7 +1087,7 @@ def my_search_function(q_id, info, method, request):
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0
         # result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0,
         #         "recall": tp / (tp + fn) if (tp + fn) > 0 else 0, f"recall@{k_list[0]}": recall[0], f"recall@{k_list[1]}": recall[1], f"recall@{k_list[2]}": recall[2]}
-        result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity,
+        result = {"query_id": q_id, "tp": tp, "fp": fp, "tn": tn, "fn": fn, "specificity": specificity, "precision": tp / (tp + fp) if (tp + fp) > 0 else 0, 
                 "recall": recall, "mcc": mcc, "balanced_accu": (specificity + recall)/2}
         return result
 
@@ -1093,8 +1095,13 @@ def my_search_function(q_id, info, method, request):
 def evaluate_fixed_pool(method: str, request: Request):
     if method.endswith("unit2course"):
         mapping = load_eval_mapping_unit2course('./gemini_generate_dataset_updateByHuman.jsonl', request)
+        if test_mode:
+            mapping = load_eval_mapping_unit2course('./test.jsonl', request)
+
     else:
         mapping = load_eval_mapping('./gemini_generate_dataset_updateByHuman.jsonl')
+        if test_mode:
+            mapping = load_eval_mapping('./test.jsonl')
     results = []
     
     for q_id, info in mapping.items():
@@ -1107,6 +1114,10 @@ def evaluate_fixed_pool(method: str, request: Request):
     balanced_accu_me = df_results['balanced_accu'].median()
     mcc = df_results['mcc'].mean()
     mcc_me = df_results['mcc'].median()
+    #ratio = (df_results['tp']/(df_results['tp']+df_results['fp']+df_results['tn']+df_results['fn'])).mean()
+    precision = df_results['precision'].mean()
+    recall = df_results['recall'].mean()
+
     # precision = df_results['precision'].mean()
     # precision_me = df_results['precision'].median()
     # recall = df_results['recall'].mean()
@@ -1131,5 +1142,7 @@ def evaluate_fixed_pool(method: str, request: Request):
     print(f"Average Balanced Accuracy: {balanced_accu}")
     print(f"Median MCC: {mcc_me}")
     print(f"Median Balanced Accuracy: {balanced_accu_me}")
+    print(f"precision: {precision}")
+    print(f"recall: {recall}")
 
     return results 
