@@ -12,7 +12,8 @@ It employs a two-stage retrieval architecture. The initial fast-retrieval stage 
 ├── app/                    # API script
 ├── data.jsonl              # course description from CyberFaCES database
 ├── ...
-├── gemini_generate_dataset_updateByHuman.jsonl # a test dataset comprising 35 queries and their corresponding ground-truth courses
+├── gemini_generate_dataset_updateByHuman.jsonl # validation dataset comprising 35 queries and their corresponding ground-truth courses (defaulted evaluation: "test_mode = False" in app/main.py)
+├── test.jsonl # test dataset comprising 17 queries and their corresponding ground-truth courses (to use it in evaluation, change to "test_mode = True" in app/main.py)
 └── course_unit_map.jsonl   # the mapping for unit_to_course logic from CyberFaCES database
 ```
 
