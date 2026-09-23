@@ -55,11 +55,12 @@ def plot_bounded_kde(df, column, title, xlabel, filename, lower_bound, upper_bou
             line, = plt.plot(x_eval, density, label=label, linewidth=2)
             plt.fill_between(x_eval, density, alpha=0.3, color=line.get_color())
 
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel('Density')
+    # plt.title(title)
+    # plt.xlabel(xlabel)
+    # plt.ylabel('Density')
+    plt.tick_params(axis="both", which="major", labelsize=14)
     plt.xlim(lower_bound, upper_bound)
-    plt.legend(title='Label')
+    plt.legend(title='Label', title_fontsize=14, fontsize=14)
     plt.savefig(os.path.join(current_dir, filename))
     plt.close()
 
