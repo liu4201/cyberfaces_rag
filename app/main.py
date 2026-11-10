@@ -134,6 +134,54 @@ def timer_decorator(func):
         return result
     return wrapper
 
+def qe4keyword(question):
+    prompt = """You are a search-query analyst for Cyberfaces, a platform of educational courses and
+    modules covering topics such as hydrology and watershed science, geospatial data
+    processing, Python/R programming, climate and environmental data, machine learning,
+    and FAIR/data-justice practices.
+    
+    A user has typed a short, possibly vague or colloquial query into the course search
+    bar. The search backend is BM25 -- plain bag-of-words matching with no understanding
+    of synonyms, abbreviations, or intent. Your job is to expand the query into the set
+    of keywords BM25 needs to find what the user actually means.
+    
+    Given the user's query, output 4-10 short keyword strings (single words or short technical phrases, not full
+    sentences) that include:
+    - the literal terms in the query
+    - close synonyms and common alternate phrasings (e.g. "hydrology" -> "water",
+      "streamflow", "watershed")
+    - standard abbreviation expansions relevant to the domain (e.g. "ML" -> "machine
+      learning")
+    - closely related concepts a student in this catalog might mean"""
+
+    url = "https://anvilgpt.rcac.purdue.edu/api/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    body = {
+        "model": "gpt-oss:120b",
+        "messages": [
+        {
+            "role": "system",
+            "content": prompt
+        },
+        {
+            "role": "user",
+            "content": question   
+        }
+        ],
+        "temperature": 0,
+        "stream": False
+    }
+    response = requests.post(url, headers=headers, json=body)
+    # print(response)
+    # if response.status_code == 200:
+    #     print(response.text)
+    # else:
+    #     raise Exception(f"Error: {response.status_code}, {response.text}")
+    return json.loads(response.text)["choices"][0]["message"]["content"]
+
 def rewrite_query_with_llm(question):
     
     prompt= """
@@ -250,7 +298,7 @@ def get_courses(question, vectordb, num_retrieval=num_retrieval):
     scores = [result[1] for result in results]
 
     #print(scores)
-    print(f"semantic matches: {scores}")
+    #print(f"semantic matches: {scores}")
 
     return docs, scores
     
@@ -275,7 +323,7 @@ def get_courses_with_threshold(question, vectordb, num_retrieval=num_retrieval):
             break
 
     #print(scores)
-    print(f"semantic matches: {scores}")
+    #print(f"semantic matches: {scores}")
 
     #return docs, scores
     return out_docs, out_scores
@@ -458,10 +506,14 @@ def get_courses_from_keywords(query, request, num_retrieval=num_retrieval):
     top_docs = [request.app.state.docs[i] for i in top_n_indices]  # from chorma vectorbase instead of bm25_docs
     #top_n = bm25.get_top_n(bm25_query, corpus, n=num_retrieval)
 
-    print(f"keyword matches: {top_scores}")
+    #print(f"keyword matches: {top_scores}")
 
     return top_docs, top_scores
 
+@timer_decorator
+def get_courses_from_keywords_QE(query, request, num_retrieval=num_retrieval):
+    query_QE = qe4keyword(query)
+    return get_courses_from_keywords(query_QE, request, num_retrieval)
 
 @timer_decorator
 def get_courses_with_threshold_from_keywords(query, request, num_retrieval=num_retrieval):
@@ -498,10 +550,16 @@ def get_courses_with_threshold_from_keywords(query, request, num_retrieval=num_r
     # print(f"Average IDF: {avg_idf:.2f}")
     # print(f"Median IDF: {median_idf:.2f}")
 
-    print(f"keyword matches: {top_scores}")
+    #print(f"keyword matches: {top_scores}")
 
     return out_docs, out_scores
 
+@timer_decorator
+def get_courses_with_threshold_from_keywords_QE(query, request, num_retrieval=num_retrieval):
+    query_QE = qe4keyword(query)
+    print(f"original query: {query}")
+    print(f"expanded query: {query_QE}")
+    return get_courses_with_threshold_from_keywords(query_QE, request, num_retrieval)
 
 @app.post("/search_lexical", response_model=List)
 async def search_lexical_from_all_courses(question: str, request: Request):
@@ -550,8 +608,8 @@ def manual_rrf(semantic_docs, keyword_docs, docs_map, k=60):
     output_docs = [docs_map[doc_id] for doc_id, _ in sorted_results]
     scores = [score for _, score in sorted_results]
 
-    print("RRF:")
-    print(scores)
+    #print("RRF:")
+    #print(scores)
 
     return output_docs, scores
 
@@ -688,8 +746,8 @@ def combine_reranking(question, request):
     output_docs= [result[1] for result in ranked_results] #if result[0]> -0.3
 
     output_scores = [result[0] for result in ranked_results] # if result[0]> -0.3
-    print("Base Reranking:")
-    print(output_scores)
+    #print("Base Reranking:")
+    #print(output_scores)
 
     return output_docs 
 
@@ -717,7 +775,7 @@ def combine_advance_reranking(question, request):
             combined_docs.append(doc)
 
     question = rewrite_query_with_llm(question)
-    print(question)
+    #print(question)
     instruction = "Given a course description, identify all documents that provide relevant information, even if they use different terminology or they are sub-topics. "
     #instruction = "Given a search query, find documents that are broadly relevant to the topic, including synonyms and related concepts."
     # 2. Prepend the instruction to the query with a newline
@@ -749,8 +807,8 @@ def combine_advance_reranking(question, request):
     
         output_docs= [result[1] for result in ranked_results]
     
-        print("Advanced Reranking:")
-        print(output_scores)
+        #print("Advanced Reranking:")
+        #print(output_scores)
     
         return output_docs, output_scores 
 
@@ -817,8 +875,8 @@ def combine_llm_scores(question, request):
     correct_doc_scores = doc_scores[:len(doc_list)]
     top_n_indices = np.argsort(correct_doc_scores)[::-1]
     # print(top_n_indices)
-    print(len(doc_scores))
-    print(len(combined_docs))
+    #print(len(doc_scores))
+    #print(len(combined_docs))
 
     # print(doc_list[41])
     # print(combined_docs[41])
@@ -865,7 +923,7 @@ def rerank_llm_scores(question: str, request: Request):
     # Acquire the READ lock
     # Multiple threads can enter this 'gen_rlock' block at the same time.
     docs, scores = combine_llm_scores_with_threshold(question, request, 0.5)
-    print(scores)
+    #print(scores)
     return docs
 
 def load_eval_mapping(filepath):
@@ -999,11 +1057,15 @@ def my_search_function(q_id, info, method, request):
             retrieved_items.append(entry)
 
         return calculate_fixed_pool(q_id, retrieved_items, info['expected'], -0.1)        
-    elif method == "RRF":
+    elif method == "RRF" or method == "RRF_QE":
         semantic_docs, _ = get_courses(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
-        keyword_docs, _ = get_courses_from_keywords(info['text'], request, num_retrieval=num_retrieval)
         positive_semantic_docs, _ = get_courses_with_threshold(info['text'], request.app.state.vectordb, num_retrieval=num_retrieval)
-        positive_keyword_docs, _ = get_courses_with_threshold_from_keywords(info['text'], request, num_retrieval=num_retrieval)
+        if method.endswith("QE"):
+            keyword_docs, _ = get_courses_from_keywords_QE(info['text'], request, num_retrieval=num_retrieval)
+            positive_keyword_docs, _ = get_courses_with_threshold_from_keywords_QE(info['text'], request, num_retrieval=num_retrieval)            
+        else:
+            keyword_docs, _ = get_courses_from_keywords(info['text'], request, num_retrieval=num_retrieval)
+            positive_keyword_docs, _ = get_courses_with_threshold_from_keywords(info['text'], request, num_retrieval=num_retrieval)
         
         above_threshold_ids = set([doc.metadata["id"] for doc in positive_semantic_docs] + [doc.metadata["id"] for doc in positive_keyword_docs])
         retrieved_ids = set([doc.metadata["id"] for doc in semantic_docs] + [doc.metadata["id"] for doc in keyword_docs])

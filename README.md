@@ -72,6 +72,8 @@ Now, open your browser and go to `http://localhost:8000/docs` to get started.
     - Parameter: 
         - "RRF"
             - evaluating conditional RRF reranker
+        - "RRF_QE"
+            - evaluating conditional RRF reranker with keyword query expansion
         - "CrossEncoder"
             - evaluating advanced cross-encoder `jina-reranker-v3`
         - "LLMs"
